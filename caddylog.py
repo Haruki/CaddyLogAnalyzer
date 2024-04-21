@@ -6,6 +6,8 @@ def main():
         for line in file:
             try:
                 json_obj = json.loads(line)
+                # extract 'request' element from json, then extract 'remote_ip' element from the request:
+                print(json_obj['request']['remote_ip'])
                 json_str = json.dumps(json_obj)
                 print(f"Length of JSON string: {len(json_str)}")
             except json.JSONDecodeError as e:
