@@ -10,8 +10,10 @@ def main():
                 print(json_obj['request']['remote_ip'])
                 json_str = json.dumps(json_obj)
                 print(f"Length of JSON string: {len(json_str)}")
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError) as e:
                 print(f"Error: Not JSON")
+            except (KeyError) as e:
+                print(f"json object error (key not found) {e}")
 
 
 if __name__ == "__main__":
