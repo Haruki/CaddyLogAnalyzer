@@ -10,8 +10,8 @@ def main():
                 remoteIp = json_obj["request"]["remote_ip"]
                 uri = json_obj["request"]["uri"]
                 status = json_obj["status"]
-                # if remote_ip  is null continue loop
-                if remoteIp is None:
+                # if remote_ip  is null or remote_ip is tarting with 192.168 then continue loop
+                if remoteIp is None or remoteIp.startswith("192.168"):
                     continue
                 print(f"Remote IP: {remoteIp}, URI: {uri}, Status: {status}")
                 json_str = json.dumps(json_obj)
