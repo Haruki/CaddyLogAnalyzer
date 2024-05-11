@@ -2,6 +2,7 @@ import json
 
 
 def main():
+    data = {}
     with open("/mnt/d/access.log", "r") as file:
         for line in file:
             try:
@@ -13,6 +14,7 @@ def main():
                 # if remote_ip  is null or remote_ip is tarting with 192.168 then continue loop
                 if remoteIp is None or remoteIp.startswith("192.168"):
                     continue
+                data[remoteIp] = {uri, status}
                 print(f"Remote IP: {remoteIp}, URI: {uri}, Status: {status}")
                 json_str = json.dumps(json_obj)
                 print(f"Length of JSON string: {len(json_str)}")
