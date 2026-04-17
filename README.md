@@ -2,6 +2,16 @@
 
 Utilities and early prototypes for working with Caddy access logs.
 
+## Setup
+
+Create a virtual environment and install the required packages:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
 ## Current Direction
 
 The long-term direction of this repository is a DuckDB-backed pipeline:
@@ -30,4 +40,4 @@ Initialize a database with:
 python3 init_duckdb.py access.duckdb
 ```
 
-This requires the `duckdb` Python package to be installed.
+This requires the dependencies in `requirements.txt` to be installed.
