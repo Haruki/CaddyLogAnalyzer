@@ -1,0 +1,10 @@
+[project]
+name = "caddyloganalyzer"
+version = "0.1.0"
+description = "DuckDB-backed pipeline for Caddy access log analysis."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5,<2",
+    "watchdog>=6.0,<7",
+]

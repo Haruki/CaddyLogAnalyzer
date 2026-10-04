@@ -32,6 +32,7 @@ Guidance for AI coding agents working in this repository.
 
 - Standard library: `json`, `time`.
 - Third-party: `duckdb` (database initialization and future ingest path), `watchdog` (needed by `watchdog.py`).
+- Toolchain: `uv` — dependencies declared in `pyproject.toml`, locked in the committed `uv.lock`. Set up with `uv sync`; run commands with `uv run <cmd>`.
 
 ## Known Issues To Consider Before Editing
 
@@ -55,12 +56,12 @@ Guidance for AI coding agents working in this repository.
 Run these checks after edits:
 
 ```bash
-python3 -m py_compile caddylog.py caddylog_seek.py watchdog.py init_duckdb.py
+uv run python -m py_compile caddylog.py caddylog_seek.py watchdog.py init_duckdb.py
 ```
 
 If the DuckDB schema or database code changes, also verify:
 
-- `python3 init_duckdb.py access.duckdb` creates the database successfully
+- `uv run python init_duckdb.py access.duckdb` creates the database successfully
 - `access_events` exists with the expected columns
 
 If behavior changes in prototype parsers, also do a smoke run against a sample log file and verify:

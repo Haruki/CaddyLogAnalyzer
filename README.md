@@ -4,13 +4,14 @@ Utilities and early prototypes for working with Caddy access logs.
 
 ## Setup
 
-Create a virtual environment and install the required packages:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) once per machine, then in the project directory run:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+uv sync          # creates .venv with the exact versions from uv.lock
+uv run python init_duckdb.py access.duckdb   # any command runs inside the env
 ```
+
+Dependencies are declared in `pyproject.toml` and pinned by the committed `uv.lock`; `.python-version` pins the interpreter. Add a dependency with `uv add <package>`.
 
 ## Current Direction
 
@@ -40,4 +41,4 @@ Initialize a database with:
 python3 init_duckdb.py access.duckdb
 ```
 
-This requires the dependencies in `requirements.txt` to be installed.
+This requires the project environment to be set up (`uv sync`).
