@@ -1,0 +1,9 @@
+[Unit]
+Description=Ingest Caddy access logs into DuckDB (one-shot)
+
+[Service]
+Type=oneshot
+User=caddy
+StateDirectory=caddylog
+WorkingDirectory=/opt/caddyloganalyzer
+ExecStart=/opt/caddyloganalyzer/.venv/bin/python ingest.py --log-dir /var/log/caddy --db /var/lib/caddylog/access.duckdb

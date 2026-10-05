@@ -15,6 +15,8 @@ Guidance for AI coding agents working in this repository.
 - `watchdog.py`: File change watcher prototype using the `watchdog` library.
 - `duckdb_schema.sql`: Canonical DuckDB schema for raw core access events.
 - `init_duckdb.py`: Minimal initializer that creates or updates the DuckDB schema in a database file.
+- `ingest.py`: One-shot checkpointed importer of Caddy access logs into `access_events`; state kept in `<db>.state.json` next to the database.
+- `systemd/`: Oneshot service + 5-minute timer running `ingest.py` on the Caddy host.
 - `README.md`: Short project overview and DuckDB initialization note.
 
 ## Runtime Assumptions
@@ -73,7 +75,7 @@ If behavior changes in prototype parsers, also do a smoke run against a sample l
 
 ## Suggested Next Improvements (When Requested)
 
-1. Add an ingest module that maps Caddy access log JSON into `access_events` rows.
+1. ~~Add an ingest module that maps Caddy access log JSON into `access_events` rows~~ — done (`ingest.py`, checkpointed, at-least-once).
 2. Add incremental import from the current log file as a bridge before live event ingestion exists.
 3. Add daily and monthly summary tables for consolidation.
 4. Add tests for schema initialization and event-to-row mapping.

@@ -42,3 +42,23 @@ python3 init_duckdb.py access.duckdb
 ```
 
 This requires the project environment to be set up (`uv sync`).
+
+## Ingestion
+
+`ingest.py` is a one-shot, checkpointed importer for Caddy access logs: each run reads new complete lines since the last checkpoint (live `access.log` plus rotated archives), inserts them into `access_events` in a single transaction, then advances the checkpoint stored next to the database (`<db>.state.json`). Re-runs are safe; at-least-once semantics mean rare duplicates are possible after crashes or rotations, never lost rows.
+
+Run manually:
+
+```bash
+uv run python ingest.py --log-dir /var/log/caddy --db access.duckdb
+```
+
+On the Caddy host, install the units from `systemd/`:
+
+```bash
+sudo cp systemd/caddylog-ingest.service systemd/caddylog-ingest.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now caddylog-ingest.timer
+```
+
+Host prerequisites: this repository checked out at `/opt/caddyloganalyzer` with `uv sync` run once (the service calls `.venv/bin/python` directly, so uv is not needed at runtime), and Caddy's log directory readable by the `caddy` user (true by default). The database and checkpoint live in `/var/lib/caddylog/`, created by systemd via `StateDirectory=`.
