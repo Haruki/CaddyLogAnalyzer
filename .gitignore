@@ -62,6 +62,7 @@ db.sqlite3
 db.sqlite3-journal
 *.duckdb
 *.duckdb.wal
+*.duckdb.state.json
 
 # Flask stuff:
 instance/
