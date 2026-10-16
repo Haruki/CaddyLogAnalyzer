@@ -21,7 +21,6 @@ The long-term direction of this repository is a DuckDB-backed pipeline:
 - analytical queries run against the raw access event table
 - periodic consolidation jobs roll recent raw events into smaller statistical summaries
 
-The existing parser scripts are still present as first prototypes, but they are not the intended foundation for the next development phase.
 
 ## DuckDB Schema
 

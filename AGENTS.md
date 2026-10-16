@@ -2,17 +2,13 @@
 
 Guidance for AI coding agents working in this repository.
 
-## Project State (April 2026)
+## Project State (October 2026)
 
-- Repository is transitioning from one-off log parsing prototypes to a DuckDB-backed access-event pipeline.
+- Repository is a DuckDB-backed access-event pipeline; early prototype scripts were removed in October 2026.
 - No package layout and no automated tests yet.
-- Existing scripts are early experiments, not the long-term architecture.
 
 ## Repository Map
 
-- `caddylog.py`: Batch parser for JSON-lines access log. Builds in-memory map of `remote_ip -> [(uri, status), ...]` and prints records.
-- `caddylog_seek.py`: Intended tail/follow mode parser (`tail -f` style) for the same log format.
-- `watchdog.py`: File change watcher prototype using the `watchdog` library.
 - `duckdb_schema.sql`: Canonical DuckDB schema for raw core access events.
 - `init_duckdb.py`: Minimal initializer that creates or updates the DuckDB schema in a database file.
 - `ingest.py`: One-shot checkpointed importer of Caddy access logs into `access_events`; state kept in `<db>.state.json` next to the database.
@@ -22,7 +18,6 @@ Guidance for AI coding agents working in this repository.
 ## Runtime Assumptions
 
 - Future architecture assumes one Python writer process inserts events into DuckDB.
-- Current prototype scripts still hardcode log path `/mnt/d/access.log`.
 - Input format is JSON per line, with keys:
   - `request.remote_ip`
   - `request.uri`
@@ -32,17 +27,12 @@ Guidance for AI coding agents working in this repository.
 
 ## Dependencies
 
-- Standard library: `json`, `time`.
-- Third-party: `duckdb` (database initialization and future ingest path), `watchdog` (needed by `watchdog.py`).
+- Third-party: `duckdb` (schema init + ingest).
 - Toolchain: `uv` — dependencies declared in `pyproject.toml`, locked in the committed `uv.lock`. Set up with `uv sync`; run commands with `uv run <cmd>`.
 
 ## Known Issues To Consider Before Editing
 
-1. `caddylog_seek.py` calls `add_data(...)` but does not define or import it.
-2. `caddylog_seek.py` has duplicate `import json`.
-3. `watchdog.py` uses `time.sleep(...)` but does not import `time`.
-4. `watchdog.py` schedules observer with `path="/mnt/d/access.log"`; watchdog scheduling is typically directory-based, so behavior may vary by platform.
-5. No automated tests currently exist.
+1. No automated tests currently exist.
 
 ## Agent Working Agreement
 
@@ -58,7 +48,7 @@ Guidance for AI coding agents working in this repository.
 Run these checks after edits:
 
 ```bash
-uv run python -m py_compile caddylog.py caddylog_seek.py watchdog.py init_duckdb.py
+uv run python -m py_compile init_duckdb.py ingest.py
 ```
 
 If the DuckDB schema or database code changes, also verify:
@@ -66,12 +56,11 @@ If the DuckDB schema or database code changes, also verify:
 - `uv run python init_duckdb.py access.duckdb` creates the database successfully
 - `access_events` exists with the expected columns
 
-If behavior changes in prototype parsers, also do a smoke run against a sample log file and verify:
+If ingest behavior changes, also do a smoke run against a sample log directory and verify:
 
 - malformed JSON lines are skipped without crashing
-- missing keys are skipped without crashing
-- LAN IP filtering still works
-- output includes expected `remote_ip`, `uri`, and `status`
+- non-access entries (ACME/TLS/admin) count as skipped, not errors
+- a second identical run inserts 0 rows (checkpoint idempotency)
 
 ## Suggested Next Improvements (When Requested)
 

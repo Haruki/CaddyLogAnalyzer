@@ -6,5 +6,4 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.5,<2",
-    "watchdog>=6.0,<7",
 ]
