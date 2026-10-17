@@ -61,3 +61,16 @@ sudo systemctl enable --now caddylog-ingest.timer
 ```
 
 Host prerequisites: this repository checked out at `/opt/caddyloganalyzer` with `uv sync` run once (the service calls `.venv/bin/python` directly, so uv is not needed at runtime), and Caddy's log directory readable by the `caddy` user (true by default). The database and checkpoint live in `/var/lib/caddylog/`, created by systemd via `StateDirectory=`.
+
+## API & Dashboard
+
+`api.py` is a read-only FastAPI service over the database: aggregate statistics for fixed windows (`5m | 1h | 1d | 30d | all`), anomaly hints with human-readable reasons, and raw event rows for drill-down. All queries run on the fly against `access_events` (single-digit milliseconds even over a year of events); the service coexists with the ingest timer — DuckDB allows one writer plus any number of readers across processes.
+
+Run locally (point at any database file via env):
+
+```bash
+CADDYLOG_DB=access.duckdb uv run python api.py          # dev, binds 127.0.0.1:8377
+# or explicitly: CADDYLOG_DB=/var/lib/caddylog/access.duckdb uv run uvicorn api:app --port 8377
+```
+
+Endpoints: `GET /stats?window=…` · `GET /anomalies` · `GET /events?window=…&ip=…&host=…&min_status=…` · `GET /status`. Interactive OpenAPI docs at `/docs`. Binds 127.0.0.1 only; expose via a Caddy reverse proxy if needed.

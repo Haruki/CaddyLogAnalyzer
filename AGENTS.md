@@ -13,6 +13,7 @@ Guidance for AI coding agents working in this repository.
 - `init_duckdb.py`: Minimal initializer that creates or updates the DuckDB schema in a database file.
 - `ingest.py`: One-shot checkpointed importer of Caddy access logs into `access_events`; state kept in `<db>.state.json` next to the database.
 - `systemd/`: Oneshot service + 5-minute timer running `ingest.py` on the Caddy host.
+- `api.py`: Read-only FastAPI service over `access_events` (stats / anomalies / events drill-down / status); runs as a long-lived process alongside the ingest timer, DB path via env `CADDYLOG_DB`.
 - `README.md`: Short project overview and DuckDB initialization note.
 
 ## Runtime Assumptions
@@ -27,7 +28,7 @@ Guidance for AI coding agents working in this repository.
 
 ## Dependencies
 
-- Third-party: `duckdb` (schema init + ingest).
+- Third-party: `duckdb` (schema init + ingest), `fastapi[standard]` (read-only web API; bundles uvicorn).
 - Toolchain: `uv` — dependencies declared in `pyproject.toml`, locked in the committed `uv.lock`. Set up with `uv sync`; run commands with `uv run <cmd>`.
 
 ## Known Issues To Consider Before Editing
