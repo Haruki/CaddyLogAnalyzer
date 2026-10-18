@@ -1,3 +1,9 @@
+# Project data (docker compose deployment; created on the host, never committed)
+data/
+*.state.json
+*.alert_state.json
+*.blocks.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

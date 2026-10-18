@@ -52,6 +52,7 @@ Run these checks after edits:
 ```bash
 uv run python -m py_compile init_duckdb.py ingest.py alert.py api.py
 ```
+If `compose.yaml` or `Dockerfile` changes, also verify the image still builds: `docker build -t caddyloganalyzer .`.
 
 If the DuckDB schema or database code changes, also verify:
 
