@@ -123,6 +123,9 @@ body {
 .dot-hot_ip { background: var(--warning); }
 .dot-volume_outlier { background: var(--accent); }
 .dot-server_errors { background: var(--error); }
+.dot-sev-info { background: var(--muted); }
+.dot-sev-warn { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.dot-sev-critical { background: var(--error); box-shadow: 0 0 6px var(--error); }
 
 /* ---------- drill-down ---------- */
 

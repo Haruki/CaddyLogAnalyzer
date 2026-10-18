@@ -111,6 +111,7 @@ function statsUrl() {
 }
 const fetchStats = () => getJSON(statsUrl());
 const fetchAnomalies = () => getJSON("/anomalies");
+const fetchFindings = () => getJSON("/findings?days=7");
 const fetchStatus = () => getJSON("/status");
 
 function fetchEvents(filter = {}) {
@@ -256,6 +257,46 @@ function renderAnomalies(findings) {
   });
 }
 
+// ---------- persisted findings (alert.py history, last 7 days) ----------
+
+function renderFindings(rows) {
+  const list = $("#findings-list");
+  if (!rows.length) { list.innerHTML = `<li class="muted">no persisted findings in the last 7 days</li>`; return; }
+
+  list.innerHTML = rows.map((f, i) => `
+    <li class="finding" data-i="${i}" tabindex="0" role="button">
+      <span class="dot dot-sev-${esc(f.severity)}"></span>
+      <span class="kind">${esc(f.kind)}</span>
+      <span class="muted mono">${new Date(parseTs(f.window_start)).toLocaleString()}</span>
+      <span>${esc(f.entity)} — ${esc(f.reason)}</span>
+      ${f.action_taken ? `<span class="muted">→ ${esc(f.action_taken)}</span>` : ""}
+    </li>`).join("");
+
+  list.querySelectorAll(".finding").forEach((el) => {
+    const open = () => openFindingDrilldown(rows[Number(el.dataset.i)]);
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+  });
+}
+
+function openFindingDrilldown(finding) {
+  // Scope the drill-down to the finding's own closed hour, not the current view —
+  // persisted findings are usually older than whatever window is on screen.
+  const from = parseTs(finding.window_start);
+  const filter = {};
+  if (finding.kind === "server_errors") {   // entity is a host
+    if (finding.entity) filter.host = finding.entity;
+    filter.min_status = 500;
+  } else if (/^\d+\.\d+\.\d+\.\d+$/.test(finding.entity)) {  // IP-based rules
+    filter.ip = finding.entity;
+  } else return;
+  $("#drilldown").classList.remove("hidden");
+  const parts = Object.entries(filter).map(([k, v]) => `${k} ${v}`);
+  $("#drilldown-query").textContent = `${parts.join(" · ")} · ${rangeLabel(from, from + 3600e3)}`;
+  fetchEvents({ ...filter, from: isoLocal(from), to: isoLocal(from + 3600e3) })
+    .then(renderEvents).catch((err) => console.error(err));
+}
+
 function renderFreshness(status, latestEvent) {
   $("#status-dot").className = `dot ${status.ok ? "dot-ok" : "dot-warn"}`;
   const through = latestEvent ? new Date(parseTs(latestEvent)).toLocaleTimeString() : "—";
@@ -357,12 +398,13 @@ function renderCrumbs() {
 
 async function refreshAll() {
   try {
-    const [stats, findings, status] = await Promise.all([fetchStats(), fetchAnomalies(), fetchStatus()]);
+    const [stats, findings, status, persisted] = await Promise.all([fetchStats(), fetchAnomalies(), fetchStatus(), fetchFindings()]);
     renderChart(stats);
     $("#total-count").textContent = stats.total_requests.toLocaleString();
     renderStatusClasses(stats.status_breakdown);
     renderHosts(stats.top_hosts);
     renderAnomalies(findings);
+    renderFindings(persisted);
     renderFreshness(status, stats.latest_event);
   } catch (err) {
     console.error("refresh failed:", err);

@@ -30,7 +30,7 @@ import asyncio
 import json
 import os
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -191,6 +191,16 @@ class Anomaly(BaseModel):
     baseline: float | None            # what normal looks like, if a rule has one
     reason: str                       # human-readable explanation for the UI
 
+
+class FindingRow(BaseModel):
+    window_start: str                 # ISO timestamp of the closed hour evaluated
+    kind: str                         # "hot_ip" | "first_sight_spike" | ... (see alert.py)
+    severity: str                     # "info" | "warn" | "critical"
+    entity: str                       # IP or host the finding is about
+    value: float | None               # metric that fired, if the rule has one
+    reason: str                       # human-readable; shown verbatim in UI and push notifications
+    action_taken: str | None          # automated containment performed (e.g. "blocked_ip_4h")
+    notified_at: str | None           # when the ntfy push was sent, if any
 
 class EventRow(BaseModel):
     event_ts: str                     # ISO timestamp
@@ -395,6 +405,35 @@ def anomalies() -> list[Anomaly]:
     with db() as con:
         return _hot_ips(con) + _volume_outliers(con) + _server_errors(con)
 
+
+@app.get("/findings", response_model=list[FindingRow])
+def findings(days: int = Query(7, ge=1, le=90)) -> list[FindingRow]:
+    """Persisted anomaly history written by alert.py over closed 1-hour windows.
+
+    Unlike /anomalies (rolling window — a finding vanishes once its hour has
+    passed), rows here survive indefinitely: last night's scan is still visible
+    weeks later. The dashboard renders this as the "recent anomalies" card.
+    """
+    with db() as con:
+        try:
+            rows = con.execute(
+                "SELECT window_start, kind, severity, entity, value, reason,"
+                " action_taken, notified_at FROM anomaly_findings"
+                " WHERE window_start >= CAST(? AS TIMESTAMP)"
+                " ORDER BY window_start DESC LIMIT 200",
+                [datetime.now() - timedelta(days=days)],
+            ).fetchall()
+        except duckdb.CatalogException:   # table absent — alert.py has never run here
+            return []
+
+    return [
+        FindingRow(
+            window_start=window_start.isoformat(), kind=kind, severity=severity,
+            entity=entity, value=value, reason=reason, action_taken=action_taken,
+            notified_at=notified_at.isoformat() if notified_at is not None else None,
+        )
+        for window_start, kind, severity, entity, value, reason, action_taken, notified_at in rows
+    ]
 
 @app.get("/events", response_model=EventsResponse)
 def events(

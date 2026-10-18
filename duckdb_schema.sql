@@ -15,3 +15,25 @@ CREATE TABLE IF NOT EXISTS access_events (
     http_proto VARCHAR,
     tls_server_name VARCHAR
 );
+
+-- Persisted anomaly findings, written by alert.py over closed 1-hour windows.
+-- Unlike the rolling /anomalies endpoint (which only sees the last hour), rows
+-- here survive indefinitely so past events stay visible on the dashboard and in
+-- push-notification history. One row per rule hit per window; ongoing incidents
+-- dedupe for notification purposes via notified_at, not by collapsing rows.
+CREATE SEQUENCE IF NOT EXISTS finding_id_seq;
+
+CREATE TABLE IF NOT EXISTS anomaly_findings (
+ finding_id BIGINT PRIMARY KEY DEFAULT nextval('finding_id_seq'),
+ window_start TIMESTAMP NOT NULL,   -- closed hour evaluated: [window_start, +1 h)
+ kind VARCHAR NOT NULL,             -- hot_ip | first_sight_spike | sustained_attack | auth_breach | exfiltration | server_errors
+ severity VARCHAR NOT NULL,         -- info (dashboard only) | warn (push) | critical (push + auto-ban)
+ entity VARCHAR NOT NULL,           -- the IP or host the finding is about
+ value DOUBLE,                      -- metric that fired (request count, error count, ...)
+ baseline DOUBLE,                   -- threshold/baseline for context
+ reason VARCHAR NOT NULL,           -- human-readable; shown verbatim in UI and ntfy push
+ action_taken VARCHAR,              -- automated containment performed, e.g. 'blocked_ip_4h'
+ notified_at TIMESTAMP,             -- when the push was sent (NULL = not pushed)
+ created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE (window_start, kind, entity)   -- re-running a window must not duplicate findings
+);
