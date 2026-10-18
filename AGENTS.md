@@ -12,8 +12,9 @@ Guidance for AI coding agents working in this repository.
 - `duckdb_schema.sql`: Canonical DuckDB schema for raw core access events.
 - `init_duckdb.py`: Minimal initializer that creates or updates the DuckDB schema in a database file.
 - `ingest.py`: One-shot checkpointed importer of Caddy access logs into `access_events`; state kept in `<db>.state.json` next to the database.
-- `systemd/`: Oneshot service + 5-minute timer running `ingest.py` on the Caddy host.
-- `api.py`: Read-only FastAPI service over `access_events` (stats / anomalies / events drill-down / status); runs as a long-lived process alongside the ingest timer, DB path via env `CADDYLOG_DB`.
+- `alert.py`: One-shot hourly anomaly evaluator over closed 1-hour windows; persists findings into `anomaly_findings`, pushes warn/critical to ntfy, auto-bans critical IPs via the Caddy admin API. Checkpoint in `<db>.alert_state.json`, block state in `<db>.blocks.json`.
+- `compose.yaml` / `Dockerfile`: Docker Compose deployment on the Caddy host — three containers (`ingest` 5-min loop, `alert` hourly loop, `api` long-lived), all running as uid/gid 966 (host caddy user); DB + state in `./data/`, log dir bind-mounted read-only.
+- `api.py`: Read-only FastAPI service over `access_events` (stats / anomalies / findings history / events drill-down / status); runs as a long-lived process alongside the ingest job, DB path via env `CADDYLOG_DB`.
 - `README.md`: Short project overview and DuckDB initialization note.
 
 ## Runtime Assumptions
@@ -49,13 +50,13 @@ Guidance for AI coding agents working in this repository.
 Run these checks after edits:
 
 ```bash
-uv run python -m py_compile init_duckdb.py ingest.py
+uv run python -m py_compile init_duckdb.py ingest.py alert.py api.py
 ```
 
 If the DuckDB schema or database code changes, also verify:
 
 - `uv run python init_duckdb.py access.duckdb` creates the database successfully
-- `access_events` exists with the expected columns
+- `access_events` and `anomaly_findings` exist with the expected columns
 
 If ingest behavior changes, also do a smoke run against a sample log directory and verify:
 

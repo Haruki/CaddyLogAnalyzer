@@ -1,4 +1,5 @@
 import argparse
+import time
 from pathlib import Path
 
 import duckdb
@@ -6,10 +7,20 @@ import duckdb
 
 SCHEMA_PATH = Path(__file__).with_name("duckdb_schema.sql")
 
+def connect_with_retry(db_path: Path, attempts: int = 5) -> duckdb.DuckDBPyConnection:
+    """Connect, retrying while another writer (the ingest or alert job) holds the write lock."""
+    for i in range(attempts):
+        try:
+            return duckdb.connect(str(db_path))
+        except duckdb.IOException:
+            if i == attempts - 1:
+                raise
+            time.sleep(2)
+
 
 def initialize_database(database_path: Path) -> None:
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
-    with duckdb.connect(str(database_path)) as connection:
+    with connect_with_retry(database_path) as connection:
         connection.execute(schema_sql)
 
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import duckdb
 
-from init_duckdb import initialize_database
+from init_duckdb import connect_with_retry, initialize_database
 
 LIVE_NAME = "access.log"
 FILE_PREFIX = "access"
@@ -180,7 +180,7 @@ def run(log_dir: Path, db_path: Path, state_path: Path) -> None:
                 inserted_here += 1
         per_file.append((path.name, len(lines), inserted_here, skipped_here))
 
-    con = duckdb.connect(str(db_path))
+    con = connect_with_retry(db_path)
     try:
         if rows:
             con.begin()

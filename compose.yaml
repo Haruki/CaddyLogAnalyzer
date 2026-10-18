@@ -1,0 +1,63 @@
+services:
+  ingest:
+    build: .
+    image: caddyloganalyzer
+    container_name: caddylog-ingest
+    user: "966:966"   # host caddy user (uid/gid) - owns /var/log/caddy, no permission changes needed
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
+    volumes:
+      # read-only; the container runs as the same uid that owns this directory on the host
+      - /var/log/caddy:/var/log/caddy:ro
+      # DB + checkpoint. Host dir must exist and be owned by 966:966 (see README).
+      - ./data:/var/lib/caddylog
+    command: >
+      sh -c 'while true; do
+               .venv/bin/python ingest.py --log-dir /var/log/caddy --db /var/lib/caddylog/access.duckdb;
+               sleep 300;
+             done'
+
+  alert:
+    image: caddyloganalyzer
+    container_name: caddylog-alert
+    user: "966:966"
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
+      # bare-metal services on the host, reached via host-gateway (not container loopback)
+      - CADDY_ADMIN=http://host.docker.internal:2019
+      - NTFY_URL=http://host.docker.internal:88
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/var/lib/caddylog
+    command: >
+      sh -c 'while true; do
+               .venv/bin/python alert.py --db /var/lib/caddylog/access.duckdb;
+               sleep 3600;
+             done'
+
+  api:
+    image: caddyloganalyzer
+    container_name: caddylog-api
+    user: "966:966"
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
+      - CADDYLOG_DB=/var/lib/caddylog/access.duckdb
+    volumes:
+      # read-only API; DuckDB readers never write to the database file
+      - ./data:/var/lib/caddylog:ro
+    ports:
+      # loopback only - caddylog.pimpelkram.com reverse-proxies here (see Caddyfile)
+      - 127.0.0.1:8377:8377
+    healthcheck:
+      test: ["CMD", ".venv/bin/python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8377/status', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    command: .venv/bin/python -m uvicorn api:app --host 0.0.0.0 --port 8377
+
+networks: {}
