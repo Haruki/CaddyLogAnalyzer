@@ -1,6 +1,6 @@
 """Read-only web API over the access_events DuckDB database.
 
-Serves aggregate statistics for fixed time windows (5m / 1h / 1d / 30d / all),
+Serves aggregate statistics for fixed time windows (5m / 1h / 1d / 30d / year),
 anomaly hints worth investigating, and raw event rows for drill-down. Runs as a
 long-lived service next to the periodic ingest:
 
@@ -26,13 +26,18 @@ Design notes
   to server time; events carry the same server clock Caddy wrote them with.
 """
 
+import asyncio
+import json
 import os
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import duckdb
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Database location: overridable via env so the same code runs in dev (point at
@@ -41,22 +46,54 @@ DB_PATH = Path(os.environ.get("CADDYLOG_DB", "/var/lib/caddylog/access.duckdb"))
 
 PORT = 8377
 
+STREAM_TICK_SECONDS = 5   # /stream fingerprint check interval (see stream() below)
+
 # Tunables for anomaly detection. Deliberately simple, explainable rules — each
 # finding carries a human-readable reason string that the UI can show verbatim.
 HOT_IP_THRESHOLD = 50      # external requests per hour that count as "hot"
 ZSCORE_LIMIT = 3.0         # daily volume this many std-devs above the 30d mean ...
 ZSCORE_MIN_DAYS = 7        # ... but only for IPs seen on at least this many days
 
-# window name -> (lower-bound interval, or None for all history; SQL expression
-# producing one timeseries bucket). Bucket sizes are chosen so every window
-# yields roughly a dozen to ~40 points: enough shape for a graph, small enough
-# for a widget.
-WINDOWS: dict[str, tuple[str | None, str]] = {
-    "5m":  ("INTERVAL '5 minutes'", "time_bucket(INTERVAL '1 minute', event_ts)"),
-    "1h":  ("INTERVAL '1 hour'",    "time_bucket(INTERVAL '5 minutes', event_ts)"),
-    "1d":  ("INTERVAL '1 day'",     "date_trunc('hour', event_ts)"),
-    "30d": ("INTERVAL '30 days'",   "date_trunc('day', event_ts)"),
-    "all": (None,                   "date_trunc('month', event_ts)"),
+# Rolling windows: name -> (lower-bound interval, SQL expression producing one
+# timeseries bucket, series step, series start). Bucket sizes are chosen so every
+# window yields roughly a dozen to ~40 points. The timeseries query zero-fills
+# EVERY bucket between start and end (generate_series + LEFT JOIN), so hours with
+# no traffic render as flat zeros instead of vanishing — otherwise the chart line
+# would jump across gaps as if they were continuous. ("year" is not in this dict:
+# it takes an optional ?year= parameter, resolved in stats().)
+WINDOWS: dict[str, tuple[str, str, str, str]] = {
+    "5m":  ("INTERVAL '5 minutes'", "time_bucket(INTERVAL '1 minute', event_ts)",   "INTERVAL '1 minute'",  "time_bucket(INTERVAL '1 minute', now() - INTERVAL '5 minutes')"),
+    "1h":  ("INTERVAL '1 hour'",    "time_bucket(INTERVAL '5 minutes', event_ts)",  "INTERVAL '5 minutes'", "time_bucket(INTERVAL '5 minutes', now() - INTERVAL '1 hour')"),
+    # date_trunc (not time_bucket) for day units: calendar-aligned to local
+    # midnight, while time_bucket would align to UTC midnight.
+    "1d":  ("INTERVAL '1 day'",     "date_trunc('hour', event_ts)",                 "INTERVAL '1 hour'",    "date_trunc('hour', now() - INTERVAL '1 day')"),
+    "30d": ("INTERVAL '30 days'",   "date_trunc('day', event_ts)",                  "INTERVAL '1 day'",     "date_trunc('day', now() - INTERVAL '30 days')"),
+}
+
+# Bucket ladder for arbitrary ranges (click-to-zoom): the finest bucket that keeps
+# the point count widget-sized (~10-45). Mirrors the preset windows exactly, so a
+# drilled range and its preset twin render identically. The dashboard mirrors this
+# in JS (static/app.js) to decide whether a clicked bucket can zoom further — keep in sync.
+BUCKET_LADDER: tuple[tuple[float, str, str], ...] = (
+    # max span seconds -> (bucket expression, step interval)
+    (10 * 60,        "time_bucket(INTERVAL '1 minute', event_ts)",  "INTERVAL '1 minute'"),
+    (2 * 3600,       "time_bucket(INTERVAL '5 minutes', event_ts)", "INTERVAL '5 minutes'"),
+    (30 * 3600,      "date_trunc('hour', event_ts)",                "INTERVAL '1 hour'"),
+    (45 * 86400,     "date_trunc('day', event_ts)",                 "INTERVAL '1 day'"),
+)
+_MONTH_BUCKET = ("date_trunc('month', event_ts)", "INTERVAL '1 month'")   # anything longer
+
+
+def _bucket_for(span_seconds: float) -> tuple[str, str]:
+    for max_span, bucket, step in BUCKET_LADDER:
+        if span_seconds <= max_span:
+            return bucket, step
+    return _MONTH_BUCKET
+
+# Fixed bucket sizes in ms (calendar months are None — their length varies).
+STEP_MS = {
+    "INTERVAL '1 minute'": 60_000, "INTERVAL '5 minutes'": 300_000,
+    "INTERVAL '1 hour'": 3_600_000, "INTERVAL '1 day'": 86_400_000,
 }
 
 app = FastAPI(
@@ -90,9 +127,42 @@ def db():
 
 
 def _since(window: str) -> str:
-    """SQL predicate bounding a window to 'now minus interval' (or all history)."""
-    interval = WINDOWS[window][0]
-    return "TRUE" if interval is None else f"event_ts >= now() - {interval}"
+    """SQL predicate bounding a rolling window to 'now minus its interval'."""
+    return f"event_ts >= now() - {WINDOWS[window][0]}"
+
+
+# Floor a datetime onto its bucket boundary. Whole-hour UTC offsets (every EU
+# timezone) keep epoch- and wall-clock alignment identical, so truncating the
+# local fields matches time_bucket()/date_trunc() exactly.
+def _floor_to_bucket(dt: datetime, step: str) -> datetime:
+    if "month" in step:
+        return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if "day" in step:
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if "hour" in step:
+        return dt.replace(minute=0, second=0, microsecond=0)
+    minutes = 5 if "5 minutes" in step else 1
+    return dt.replace(second=0, microsecond=0, minute=(dt.minute // minutes) * minutes)
+
+
+def _parse_range(from_: str | None, to: str | None) -> tuple[datetime, datetime] | None:
+    """Validate the optional from/to pair (naive server-local ISO timestamps)."""
+    if (from_ is None) != (to is None):
+        raise HTTPException(400, "'from' and 'to' must be given together")
+    if from_ is None:
+        return None
+    try:
+        f = datetime.fromisoformat(from_)
+        t = datetime.fromisoformat(to)
+    except ValueError:
+        raise HTTPException(400, "from/to must be ISO timestamps (e.g. 2026-08-01T00:00:00)")
+    if f.tzinfo is not None or t.tzinfo is not None:
+        raise HTTPException(400, "offset-bearing timestamps are not supported; send server-local naive ISO")
+    if t <= f:
+        raise HTTPException(400, "'to' must be after 'from'")
+    if (t - f).total_seconds() > 730 * 86400:   # keep the chart at ~24 points or fewer
+        raise HTTPException(400, "range too large; maximum span is 2 years")
+    return f, t
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +175,10 @@ class HostCount(BaseModel):
 
 
 class StatsResponse(BaseModel):
-    window: str
+    window: str | None                 # preset name, null in from/to range mode
+    bucket_ms: int | None              # timeseries bucket size; null for calendar months
     total_requests: int
+    latest_event: str | None          # newest event in the window (ISO), null if empty
     status_breakdown: dict[int, int]   # HTTP status -> request count
     top_hosts: list[HostCount]
     timeseries: list[tuple[str, int]]  # (bucket start as ISO timestamp, count)
@@ -131,7 +203,7 @@ class EventRow(BaseModel):
 
 
 class EventsResponse(BaseModel):
-    window: str
+    window: str | None                 # preset name, null in from/to range mode
     count: int                        # rows returned (capped by limit)
     events: list[EventRow]            # newest first
 
@@ -225,35 +297,60 @@ def _server_errors(con) -> list[Anomaly]:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/")
-def index() -> dict:
-    """Landing info: what this service is and which endpoints exist."""
-    return {
-        "service": "caddyloganalyzer api",
-        "endpoints": [
-            "/stats?window=5m|1h|1d|30d|all",
-            "/anomalies",
-            "/events?window=...&ip=...&host=...&min_status=...",
-            "/status",
-        ],
-    }
-
-
 @app.get("/stats", response_model=StatsResponse)
-def stats(window: str = Query("1h", description="5m | 1h | 1d | 30d | all")) -> StatsResponse:
-    """Aggregate statistics for one time window, computed on the fly.
+def stats(
+    window: str = Query("1h", description="5m | 1h | 1d | 30d | year"),
+    year: int | None = Query(None, ge=2000, le=2100,
+                            description="calendar year for the 'year' window (default: current)"),
+    from_: str | None = Query(None, alias="from",
+                             description="range start (naive ISO); with 'to', overrides window — used by click-to-zoom"),
+    to: str | None = Query(None, description="range end, exclusive (naive ISO)"),
+) -> StatsResponse:
+    """Aggregate statistics for one time window or explicit range, computed on the fly.
 
     One read-only connection, four small queries; each takes single-digit
     milliseconds even over a year of raw events (measured), so there is no
     caching or summary layer in between.
     """
-    if window not in WINDOWS:
-        raise HTTPException(400, f"unknown window {window!r}; expected one of {sorted(WINDOWS)}")
-    since = _since(window)
-    bucket = WINDOWS[window][1]
+    series_filter = ""      # extra predicate for generate_series output (range mode only)
+    rng = _parse_range(from_, to)
+    if rng is not None:
+        # Explicit range mode (click-to-zoom): bucket size derived from the span,
+        # zero-filled across exactly [from, to).
+        f, t = rng
+        since = f"event_ts >= '{f.isoformat()}' AND event_ts < '{t.isoformat()}'"
+        bucket, step = _bucket_for((t - f).total_seconds())
+        # generate_series is INCLUSIVE of its end value: when 'to' lands exactly on a
+        # bucket boundary that would add one stray empty bucket past the range.
+        series_start = f"TIMESTAMP '{_floor_to_bucket(f, step).isoformat()}'"
+        series_end = f"TIMESTAMP '{t.isoformat()}'"
+        series_filter = f" WHERE g.t < '{t.isoformat()}'"
+    elif window == "year":
+        # Calendar-year window with monthly buckets: always at most 12 points
+        # (fewer for the current, still-in-progress year) no matter how much
+        # history exists — which is why this replaced the old unbounded
+        # 'all time' window. ?year= selects a past year once more than one
+        # year of data has been ingested; the UI picker comes later.
+        current = datetime.now().year
+        y = year or current
+        since = f"event_ts >= make_date({y}, 1, 1) AND event_ts < make_date({y + 1}, 1, 1)"
+        bucket = "date_trunc('month', event_ts)"
+        step = "INTERVAL '1 month'"
+        series_start = f"make_date({y}, 1, 1)"
+        # generate_series is INCLUSIVE of its end value: for past years that
+        # would add a stray January of the next year, so stop at December.
+        series_end = "now()" if y == current else f"make_date({y + 1}, 1, 1) - INTERVAL '1 month'"
+    elif window in WINDOWS:
+        since = _since(window)
+        bucket, step, series_start = WINDOWS[window][1], WINDOWS[window][2], WINDOWS[window][3]
+        series_end = "now()"
+    else:
+        raise HTTPException(400, f"unknown window {window!r}; expected one of {sorted(WINDOWS) + ['year']}")
 
     with db() as con:
-        total = con.execute(f"SELECT count(*) FROM access_events WHERE {since}").fetchone()[0]
+        total, latest = con.execute(
+            f"SELECT count(*), max(event_ts) FROM access_events WHERE {since}"
+        ).fetchone()
         breakdown = con.execute(
             f"SELECT status, count(*) FROM access_events WHERE {since} GROUP BY 1 ORDER BY 2 DESC"
         ).fetchall()
@@ -267,13 +364,19 @@ def stats(window: str = Query("1h", description="5m | 1h | 1d | 30d | all")) -> 
         timeseries = [
             (bucket_start.isoformat(), count)
             for bucket_start, count in con.execute(
-                f"SELECT {bucket} t, count(*) FROM access_events WHERE {since} GROUP BY 1 ORDER BY 1"
+                "SELECT g.t::TIMESTAMP, count(e.t)"
+                f" FROM generate_series({series_start}, {series_end}, {step}) AS g(t)"
+                f" LEFT JOIN (SELECT {bucket} t FROM access_events WHERE {since}) e ON e.t = g.t"
+                f"{series_filter}"
+                " GROUP BY 1 ORDER BY 1"
             ).fetchall()
         ]
 
     return StatsResponse(
-        window=window,
+        window=None if rng is not None else window,
+        bucket_ms=STEP_MS.get(step),
         total_requests=total,
+        latest_event=latest.isoformat() if latest is not None else None,
         status_breakdown={status: count for status, count in breakdown if status is not None},
         top_hosts=top_hosts,
         timeseries=timeseries,
@@ -295,23 +398,32 @@ def anomalies() -> list[Anomaly]:
 
 @app.get("/events", response_model=EventsResponse)
 def events(
-    window: str = Query("1h"),
+    window: str | None = Query(None, description="preset window; or use from/to"),
     ip: str | None = Query(None, description="filter on remote_ip"),
     host: str | None = Query(None, description="filter on host"),
     min_status: int | None = Query(None, ge=100, le=599, description="only status >= this"),
     limit: int = Query(200, ge=1, le=1000),
+    from_: str | None = Query(None, alias="from",
+                             description="range start (naive ISO); with 'to', overrides window"),
+    to: str | None = Query(None, description="range end, exclusive (naive ISO)"),
 ) -> EventsResponse:
     """Raw event rows for drill-down — 'look at the logs that raised suspicion'.
 
-    Filters compose freely (window + ip + host + min_status); newest first.
+    Filters compose freely (window or from/to + ip + host + min_status); newest first.
     This is the endpoint an anomaly click in the dashboard will call with the
-    flagged entity pre-filled.
+    flagged entity pre-filled, and where a clicked finest-grain bucket lands.
     """
-    if window not in WINDOWS:
-        raise HTTPException(400, f"unknown window {window!r}; expected one of {sorted(WINDOWS)}")
-
-    where = [_since(window)]
+    rng = _parse_range(from_, to)
+    where: list[str] = []
     params: list = []
+    if rng is not None:
+        f, t = rng
+        where += ["event_ts >= ?", "event_ts < ?"]
+        params += [f, t]
+    elif window in WINDOWS:
+        where.append(_since(window))
+    else:
+        raise HTTPException(400, "either a valid 'window' or both 'from' and 'to' are required")
     if ip is not None:
         where.append("remote_ip = ?")
         params.append(ip)
@@ -330,7 +442,7 @@ def events(
         ).fetchall()
 
     return EventsResponse(
-        window=window,
+        window=None if rng is not None else window,
         count=len(rows),
         events=[
             EventRow(
@@ -362,6 +474,53 @@ def status() -> StatusResponse:
         errors_last_hour=errors,
         anomalies=len(findings),
     )
+
+
+@app.get("/stream")
+async def stream() -> StreamingResponse:
+    """Server-Sent Events push channel for the dashboard's auto-refresh.
+
+    Emits an "update" event whenever new data has landed in the database —
+    detected by fingerprinting (max(event_ts), count(*)) on a fresh read-only
+    connection every STREAM_TICK_SECONDS — otherwise a heartbeat comment line
+    that keeps the connection alive through proxies. No IPC with ingest is
+    needed: with the single-writer design, the database itself is the signal.
+
+    The dashboard's EventSource auto-reconnects if this stream drops; clients
+    behind a proxy that buffers SSE fall back to plain polling (see app.js).
+    """
+    async def event_gen():
+        last = None
+        while True:
+            with db() as con:   # sync query (~ms); fine inside the loop at this tick rate
+                fingerprint = con.execute(
+                    "SELECT max(event_ts), count(*) FROM access_events"
+                ).fetchone()
+            if fingerprint != last:
+                payload = json.dumps({
+                    "latest_event": fingerprint[0].isoformat() if fingerprint[0] is not None else None,
+                    "total_rows": fingerprint[1],
+                })
+                yield f"event: update\ndata: {payload}\n\n"
+                last = fingerprint
+            else:
+                yield ": heartbeat\n\n"
+            await asyncio.sleep(STREAM_TICK_SECONDS)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# Serve the dashboard as static files. Mounted LAST so every API route above
+# keeps priority; with html=True, "/" resolves to static/index.html.
+app.mount(
+    "/",
+    StaticFiles(directory=Path(__file__).with_name("static"), html=True),
+    name="static",
+)
 
 
 if __name__ == "__main__":

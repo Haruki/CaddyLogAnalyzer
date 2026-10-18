@@ -7,4 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.5,<2",
     "fastapi[standard]>=0.143.3",
+    # required by DuckDB's Python client for interval/calendar SQL (generate_series)
+    "pytz>=2026.5",
 ]

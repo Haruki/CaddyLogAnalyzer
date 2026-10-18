@@ -64,7 +64,7 @@ Host prerequisites: this repository checked out at `/opt/caddyloganalyzer` with 
 
 ## API & Dashboard
 
-`api.py` is a read-only FastAPI service over the database: aggregate statistics for fixed windows (`5m | 1h | 1d | 30d | all`), anomaly hints with human-readable reasons, and raw event rows for drill-down. All queries run on the fly against `access_events` (single-digit milliseconds even over a year of events); the service coexists with the ingest timer — DuckDB allows one writer plus any number of readers across processes.
+`api.py` is a read-only FastAPI service over the database: aggregate statistics for fixed windows (`5m | 1h | 1d | 30d | year`, where `year` is a calendar year with monthly buckets and accepts `?year=YYYY` for past years) or an explicit range (`from`/`to`, naive server-local ISO timestamps; the bucket size is derived from the span — per-minute up to monthly — and the series is zero-filled across exactly `[from, to)`), anomaly hints with human-readable reasons, and raw event rows for drill-down. All queries run on the fly against `access_events` (single-digit milliseconds even over a year of events); the service coexists with the ingest timer — DuckDB allows one writer plus any number of readers across processes.
 
 Run locally (point at any database file via env):
 
@@ -73,4 +73,6 @@ CADDYLOG_DB=access.duckdb uv run python api.py          # dev, binds 127.0.0.1:8
 # or explicitly: CADDYLOG_DB=/var/lib/caddylog/access.duckdb uv run uvicorn api:app --port 8377
 ```
 
-Endpoints: `GET /stats?window=…` · `GET /anomalies` · `GET /events?window=…&ip=…&host=…&min_status=…` · `GET /status`. Interactive OpenAPI docs at `/docs`. Binds 127.0.0.1 only; expose via a Caddy reverse proxy if needed.
+The service also serves a small self-contained dashboard at `/` (static files from `static/`, no build step): window tabs, request chart (vendored uPlot), status breakdown, top hosts and anomaly findings with click-through drill-down into raw rows. The chart is click-to-zoom: clicking a bucket drills one level deeper (hour → 5-minute → per-minute → raw events) and breadcrumb chips track the path back; presets always reset to now-anchored views. Live updates arrive via the SSE endpoint `GET /stream` — the server pushes an event whenever new rows land in the database (fingerprint check every 5 s); if a proxy buffers SSE, the dashboard falls back to plain polling automatically.
+
+Endpoints: `GET /stats?window=…` or `GET /stats?from=…&to=…` · `GET /anomalies` · `GET /events?(window=…|from=…&to=…)&ip=…&host=…&min_status=…` · `GET /status` · `GET /stream`. Interactive OpenAPI docs at `/docs`. Binds 127.0.0.1 only; expose via a Caddy reverse proxy if needed (SSE needs `proxy_buffering off`).
