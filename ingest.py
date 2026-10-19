@@ -27,8 +27,8 @@ BATCH_SIZE = 5000
 INSERT_SQL = (
     "INSERT INTO access_events"
     " (event_ts, remote_ip, client_ip, host, method, uri_path, uri_query,"
-    " status, duration_ms, bytes_read, response_size, user_id, http_proto, tls_server_name)"
-    " VALUES (to_timestamp(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " status, duration_ms, bytes_read, response_size, user_id, http_proto, tls_server_name, user_agent)"
+    " VALUES (to_timestamp(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -36,6 +36,9 @@ def to_row(obj: dict):
     """Map one Caddy access-log JSON object to an access_events row tuple."""
     req = obj["request"]
     uri_path, _, uri_query = req.get("uri", "").partition("?")
+    ua = (req.get("headers") or {}).get("User-Agent")
+    if isinstance(ua, list):          # Caddy encodes multi-value headers as arrays; UA is single-valued in practice
+        ua = ua[0] if ua else None
     return (
         obj["ts"],                                  # epoch seconds; converted in SQL
         req.get("remote_ip"),
@@ -51,6 +54,7 @@ def to_row(obj: dict):
         obj.get("user_id") or None,
         req.get("proto"),
         (req.get("tls") or {}).get("server_name"),  # absent for plain-HTTP entries
+        ua,                                        # raw User-Agent string; NULL when absent
     )
 
 

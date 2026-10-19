@@ -1,6 +1,6 @@
 """Hourly anomaly evaluation over closed 1-hour windows.
 
-Intended to run periodically (see systemd/caddylog-alert.timer). Each run:
+Runs hourly in the caddylog-alert container (compose.yaml). Each run:
   1. evaluates the detection rules below over the last fully elapsed hour
      (the window [floor(now, hour) - 1h, floor(now, hour)) — never partial data)
   2. persists findings into anomaly_findings (history survives the rolling
@@ -9,6 +9,8 @@ Intended to run periodically (see systemd/caddylog-alert.timer). Each run:
      re-pushed within NOTIFY_DEDUP_HOURS so an ongoing incident doesn't page
      every hour
   4. on critical IP findings: blocks the IP at the Caddy edge via the admin API
+  5. enriches the hour's loud external IPs into ip_enrichment for the dashboard's
+     top-offenders view (country/ASN via optional GeoLite2 files, CGNAT flag always)
 
 Rules are deliberately simple and explainable — every finding carries a
 human-readable reason string that the dashboard and push notifications show
@@ -252,7 +254,88 @@ def finding_id(con, ws: datetime, kind: str, entity: str) -> int | None:
     return row[0] if row else None
 
 
-# --- notification ---------------------------------------------------------------
+# --- IP enrichment ---------------------------------------------------------------
+# Lazy country/ASN lookup for the dashboard's "top offenders" view: only IPs that
+# were loud enough to matter get a row in ip_enrichment — top external requesters
+# per closed hour plus finding entities. Never every row, and LAN IPs never enter.
+# GeoLite2 .mmdb files (GEOIP_DIR) are optional: without them the CGNAT flag
+# still works and country_code/asn stay NULL until the files appear; a later run
+# then backfills the missing rows automatically.
+
+GEOIP_DIR = Path(os.environ.get("CADDYLOG_GEOIP", "/var/lib/caddylog/geoip"))
+ENRICH_TOP_N = 50
+CGNAT_RANGE = ipaddress.ip_network("100.64.0.0/10")   # RFC 6598 shared carrier NAT
+
+_geoip_readers = None        # (country_reader, asn_reader) once the files exist
+_geoip_unavailable = False   # set when loading failed; don't retry or re-log
+
+
+def _load_geoip():
+    """Open the GeoLite2 readers once. None while the .mmdb files are absent."""
+    global _geoip_readers, _geoip_unavailable
+    if _geoip_readers is not None or _geoip_unavailable:
+        return _geoip_readers
+    try:
+        import geoip2.database
+        country = GEOIP_DIR / "GeoLite2-Country.mmdb"
+        asn = GEOIP_DIR / "GeoLite2-ASN.mmdb"
+        if not (country.is_file() and asn.is_file()):
+            return None      # normal state before the files are dropped in — no error log
+        _geoip_readers = (geoip2.database.Reader(str(country)), geoip2.database.Reader(str(asn)))
+    except Exception as e:   # corrupt file or missing package: degrade, keep alerting alive
+        _geoip_unavailable = True
+        print(f"alert: geoip unavailable ({e}); country/ASN lookups skipped", file=sys.stderr)
+    return _geoip_readers
+
+
+def enrich_ip(ip: str):
+    """One IP -> (network_type, country_code, country_name, asn, asn_org)."""
+    network_type = "cgnat" if ipaddress.ip_address(ip) in CGNAT_RANGE else "public"
+    country_code = country_name = asn = asn_org = None
+    readers = _load_geoip()
+    if readers is not None:
+        try:
+            c = readers[0].country(ip)
+            country_code, country_name = c.country.iso_code, c.country.name
+            a = readers[1].asn(ip)
+            asn, asn_org = a.autonomous_system_number, a.autonomous_system_organization
+        except Exception as e:   # IP unknown to the DBs — keep the row with what we have
+            print(f"alert: geoip lookup failed for {ip}: {e}", file=sys.stderr)
+    return (network_type, country_code, country_name, asn, asn_org)
+
+
+def enrich_top_ips(con, ws: datetime, we: datetime, findings: list[dict]) -> int:
+    """Enrich the loud external IPs of one closed hour; returns rows written."""
+    rows = con.execute(
+        f"SELECT remote_ip FROM access_events WHERE event_ts >= ? AND event_ts < ? AND {EXT} "
+        "GROUP BY 1 ORDER BY count(*) DESC LIMIT ?", [ws, we, ENRICH_TOP_N]).fetchall()
+    ips = {r[0] for r in rows if r[0]}
+    for f in findings:                       # finding entities that are IPs (hosts stay unenriched)
+        try:
+            ipaddress.ip_address(f["entity"])
+            ips.add(f["entity"])
+        except ValueError:
+            pass
+
+    known = {r[0] for r in con.execute("SELECT ip FROM ip_enrichment").fetchall()}
+    new_ips = sorted(ips - known)
+    if new_ips:
+        con.executemany(
+            "INSERT OR REPLACE INTO ip_enrichment"
+            " (ip, network_type, country_code, country_name, asn, asn_org)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [(ip,) + enrich_ip(ip) for ip in new_ips])
+
+    # Backfill rows written before the .mmdb files existed (or a lookup that failed).
+    if _load_geoip() is not None:
+        missing = {r[0] for r in con.execute(
+            "SELECT ip FROM ip_enrichment WHERE country_code IS NULL").fetchall()} - set(new_ips)
+        if missing:
+            con.executemany(
+                "UPDATE ip_enrichment SET network_type=?, country_code=?, country_name=?,"
+                " asn=?, asn_org=? WHERE ip=?",
+                [enrich_ip(ip) + (ip,) for ip in sorted(missing)])
+    return len(new_ips)
 
 def already_notified(con, kind: str, entity: str) -> bool:
     """Dedupe ongoing incidents: same kind+entity pushed recently?"""
@@ -461,6 +544,11 @@ def run(db_path: Path, state_path: Path, blocks_path: Path,
     try:
         findings = evaluate_window(con, ws, we)
         persist_findings(con, ws, findings)
+        try:
+            enriched = enrich_top_ips(con, ws, we, findings)
+        except Exception as e:   # enrichment is auxiliary — never take alerting down with it
+            print(f"alert: enrichment failed ({e}); continuing", file=sys.stderr)
+            enriched = 0
 
         pushed = blocked = 0
         for f in sorted(findings, key=lambda x: (x["severity"] != SEV_CRITICAL, x["kind"])):
@@ -481,7 +569,7 @@ def run(db_path: Path, state_path: Path, blocks_path: Path,
             state_path.write_text(json.dumps({"last_window_end": iso(we)}), encoding="utf-8")
 
         print(f"alert: {mode}, {len(findings)} finding(s) persisted, "
-              f"{pushed} pushed, {blocked} blocked")
+              f"{pushed} pushed, {blocked} blocked, {enriched} ip(s) enriched")
         for f in findings:
             mark = {"info": "  ", "warn": "! ", "critical": "**"}[f["severity"]]
             print(f"  {mark}[{f['severity']}] {f['kind']} {f['entity']} — {f['reason']}")

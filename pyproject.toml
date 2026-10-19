@@ -9,4 +9,6 @@ dependencies = [
     "fastapi[standard]>=0.143.3",
     # required by DuckDB's Python client for interval/calendar SQL (generate_series)
     "pytz>=2026.5",
+    # offline GeoLite2 lookups for the ip_enrichment step in alert.py
+    "geoip2>=5,<6",
 ]

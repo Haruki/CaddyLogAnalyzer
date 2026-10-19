@@ -13,8 +13,11 @@ CREATE TABLE IF NOT EXISTS access_events (
     response_size BIGINT,
     user_id VARCHAR,
     http_proto VARCHAR,
-    tls_server_name VARCHAR
+    tls_server_name VARCHAR,
+    user_agent VARCHAR              -- raw User-Agent header; NULL for entries without one
 );
+-- Migration for databases created before the user_agent column existed.
+ALTER TABLE access_events ADD COLUMN IF NOT EXISTS user_agent VARCHAR;
 
 -- Persisted anomaly findings, written by alert.py over closed 1-hour windows.
 -- Unlike the rolling /anomalies endpoint (which only sees the last hour), rows
@@ -36,4 +39,16 @@ CREATE TABLE IF NOT EXISTS anomaly_findings (
  notified_at TIMESTAMP,             -- when the push was sent (NULL = not pushed)
  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE (window_start, kind, entity)   -- re-running a window must not duplicate findings
+);
+-- Lazy IP enrichment, written by alert.py only for IPs that were loud enough to matter
+-- (top external requesters per closed hour + finding entities). LAN IPs never enter here.
+-- country_code/asn stay NULL until GeoLite2 .mmdb files are present in geoip/.
+CREATE TABLE IF NOT EXISTS ip_enrichment (
+  ip VARCHAR PRIMARY KEY,
+  network_type VARCHAR NOT NULL,     -- 'cgnat' (100.64.0.0/10, RFC 6598 shared carrier NAT) | 'public'
+  country_code VARCHAR,              -- ISO-3166 alpha-2 ('DE'), from GeoLite2-Country
+  country_name VARCHAR,
+  asn INTEGER,                       -- AS number, from GeoLite2-ASN
+  asn_org VARCHAR,                   -- e.g. 'Telekom Deutschland GmbH' - for DE residential IPs usually the ISP itself
+  enriched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

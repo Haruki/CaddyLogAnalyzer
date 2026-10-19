@@ -109,9 +109,20 @@ body {
 .hosts .host-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hosts .count { margin-left: auto; color: var(--muted); flex: none; }
 
+/* top offenders */
+.card-top-ips { margin-top: 14px; }
+.top-ips li { display: block; }
+.top-ips .ip-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.top-ips .ip-sub { display: block; padding-left: 2px; font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 1.5; background: var(--border); color: var(--muted); flex: none; }
+.chip-country { color: var(--fg); }
+.chip-cgnat { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.chip-mobile { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+
 /* ---------- anomalies ---------- */
 
 .card-anomalies { margin-top: 14px; }
+.card-findings { margin-top: 14px; }
 .badge { display: inline-block; min-width: 20px; padding: 1px 7px; border-radius: 999px; text-align: center; font-size: 12px; font-weight: 600; vertical-align: 1px; }
 .badge-zero { background: var(--border); color: var(--muted); }
 .badge-warn { background: rgba(210, 153, 34, 0.2); color: var(--warning); }

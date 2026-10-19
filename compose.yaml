@@ -32,6 +32,8 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/var/lib/caddylog
+      # GeoLite2 .mmdb files (optional - country/ASN enrichment degrades gracefully without them)
+      - ./geoip:/var/lib/caddylog/geoip:ro
     command: >
       sh -c 'while true; do
                .venv/bin/python alert.py --db /var/lib/caddylog/access.duckdb;

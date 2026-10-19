@@ -27,6 +27,7 @@ Design notes
 """
 
 import asyncio
+import ipaddress
 import json
 import os
 from contextlib import contextmanager
@@ -41,7 +42,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Database location: overridable via env so the same code runs in dev (point at
-# a local sample DB) and under systemd on the Caddy host (default below).
+# a local sample DB) and in the caddylog-api container on the Caddy host (default below).
 DB_PATH = Path(os.environ.get("CADDYLOG_DB", "/var/lib/caddylog/access.duckdb"))
 
 PORT = 8377
@@ -190,6 +191,8 @@ class Anomaly(BaseModel):
     value: float                      # observed metric (requests / z-score / errors)
     baseline: float | None            # what normal looks like, if a rule has one
     reason: str                       # human-readable explanation for the UI
+    country_code: str | None = None   # from ip_enrichment when entity is an IP
+    asn_org: str | None = None        # e.g. 'Telekom Deutschland GmbH' - DE residential IPs usually resolve to the ISP itself
 
 
 class FindingRow(BaseModel):
@@ -201,6 +204,8 @@ class FindingRow(BaseModel):
     reason: str                       # human-readable; shown verbatim in UI and push notifications
     action_taken: str | None          # automated containment performed (e.g. "blocked_ip_4h")
     notified_at: str | None           # when the ntfy push was sent, if any
+    country_code: str | None = None   # from ip_enrichment when entity is an IP
+    asn_org: str | None = None        # e.g. 'Telekom Deutschland GmbH' - DE residential IPs usually resolve to the ISP itself
 
 class EventRow(BaseModel):
     event_ts: str                     # ISO timestamp
@@ -216,6 +221,25 @@ class EventsResponse(BaseModel):
     window: str | None                 # preset name, null in from/to range mode
     count: int                        # rows returned (capped by limit)
     events: list[EventRow]            # newest first
+
+
+class TopIpRow(BaseModel):
+    ip: str
+    requests: int                     # total in the window
+    first_seen: str | None            # ISO; when this IP first appears within the window
+    last_seen: str | None             # ISO
+    country_code: str | None          # from ip_enrichment (NULL until GeoLite2 files exist)
+    country_name: str | None
+    asn: int | None
+    asn_org: str | None               # for DE residential IPs usually the ISP itself
+    network_type: str                 # 'cgnat' (shared carrier NAT, RFC 6598) | 'public'
+    mobile_ua_share: float            # 0.0-1.0 share of this IP's requests with a phone User-Agent
+
+
+class TopIpsResponse(BaseModel):
+    window: str | None                 # preset name, null in from/to range mode
+    count: int                        # rows returned (capped by limit)
+    ips: list[TopIpRow]               # most requests first
 
 
 class StatusResponse(BaseModel):
@@ -403,7 +427,12 @@ def anomalies() -> list[Anomaly]:
     pre-filled.
     """
     with db() as con:
-        return _hot_ips(con) + _volume_outliers(con) + _server_errors(con)
+        out = _hot_ips(con) + _volume_outliers(con) + _server_errors(con)
+    info = _enrich_entities([a.entity for a in out if a.entity])
+    for a in out:                     # IP entities get country/ASN context; hosts stay plain
+        if a.entity in info:
+            a.country_code, a.asn_org = info[a.entity]
+    return out
 
 
 @app.get("/findings", response_model=list[FindingRow])
@@ -426,7 +455,7 @@ def findings(days: int = Query(7, ge=1, le=90)) -> list[FindingRow]:
         except duckdb.CatalogException:   # table absent — alert.py has never run here
             return []
 
-    return [
+    rows_out = [
         FindingRow(
             window_start=window_start.isoformat(), kind=kind, severity=severity,
             entity=entity, value=value, reason=reason, action_taken=action_taken,
@@ -434,6 +463,100 @@ def findings(days: int = Query(7, ge=1, le=90)) -> list[FindingRow]:
         )
         for window_start, kind, severity, entity, value, reason, action_taken, notified_at in rows
     ]
+    info = _enrich_entities([r.entity for r in rows_out])
+    for r in rows_out:                # IP entities get country/ASN context; hosts stay plain
+        if r.entity in info:
+            r.country_code, r.asn_org = info[r.entity]
+    return rows_out
+
+def _enrich_entities(entities: list[str]) -> dict[str, tuple]:
+    """ip_enrichment rows for the IP-typed entities (host names are skipped)."""
+    ips = []
+    for e in entities:
+        try:
+            ipaddress.ip_address(e)
+            ips.append(e)
+        except ValueError:
+            pass
+    if not ips:
+        return {}
+    with db() as con:
+        rows = con.execute(
+            "SELECT ip, country_code, asn_org FROM ip_enrichment WHERE ip IN ("
+            + ", ".join("?" * len(ips)) + ")", ips).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
+def _network_type(ip: str, stored: str | None) -> str:
+    """CGNAT is decidable from the IP alone (RFC 6598), so an IP not enriched yet still gets it right."""
+    if stored:
+        return stored
+    return "cgnat" if ipaddress.ip_address(ip) in ipaddress.ip_network("100.64.0.0/10") else "public"
+
+
+@app.get("/top-ips", response_model=TopIpsResponse)
+def top_ips(
+    window: str | None = Query(None, description="preset window; or use from/to"),
+    limit: int = Query(20, ge=1, le=100),
+    from_: str | None = Query(None, alias="from",
+                             description="range start (naive ISO); with 'to', overrides window"),
+    to: str | None = Query(None, description="range end, exclusive (naive ISO)"),
+) -> TopIpsResponse:
+    """Top external requesters of a window - the dashboard's "top offenders" card.
+
+    Each row carries ip_enrichment context when available (country, ASN org,
+    CGNAT flag; written by alert.py for loud IPs only) plus the share of this
+    IP's requests that carried a phone User-Agent - the practical answer to
+    "is this someone's mobile or a box". LAN traffic is excluded.
+    """
+    rng = _parse_range(from_, to)
+    where: list[str] = ["remote_ip IS NOT NULL", "remote_ip NOT LIKE '192.168%'"]
+    params: list = []
+    if rng is not None:
+        f, t = rng
+        where += ["event_ts >= ?", "event_ts < ?"]
+        params += [f, t]
+    elif window in WINDOWS:
+        where.append(_since(window))
+    else:
+        raise HTTPException(400, "either a valid 'window' or both 'from' and 'to' are required")
+
+    with db() as con:
+        try:
+            rows = con.execute(
+                "SELECT e.remote_ip, count(*), min(e.event_ts), max(e.event_ts),"
+                " count(*) FILTER (e.user_agent ILIKE '%Android%' OR e.user_agent ILIKE '%iPhone%'),"
+                " i.network_type, i.country_code, i.country_name, i.asn, i.asn_org"
+                " FROM access_events e LEFT JOIN ip_enrichment i ON i.ip = e.remote_ip"
+                f" WHERE {' AND '.join(where)}"
+                " GROUP BY 1, 6, 7, 8, 9, 10 ORDER BY 2 DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        except duckdb.CatalogException:   # pre-enrichment DB: no ip_enrichment (and maybe no user_agent) either
+            rows = con.execute(
+                "SELECT e.remote_ip, count(*), min(e.event_ts), max(e.event_ts),"
+                " 0, NULL, NULL, NULL, NULL, NULL"
+                f" FROM access_events e WHERE {' AND '.join(where)}"
+                " GROUP BY 1 ORDER BY 2 DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+
+    return TopIpsResponse(
+        window=None if rng is not None else window,
+        count=len(rows),
+        ips=[
+            TopIpRow(
+                ip=ip, requests=reqs,
+                first_seen=first.isoformat() if first is not None else None,
+                last_seen=last.isoformat() if last is not None else None,
+                country_code=cc, country_name=cn, asn=asn, asn_org=ao,
+                network_type=_network_type(ip, nt),
+                mobile_ua_share=round(mobile / reqs, 3) if reqs else 0.0,
+            )
+            for ip, reqs, first, last, mobile, nt, cc, cn, asn, ao in rows
+        ],
+    )
+
 
 @app.get("/events", response_model=EventsResponse)
 def events(

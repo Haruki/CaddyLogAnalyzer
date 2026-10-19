@@ -113,6 +113,16 @@ const fetchStats = () => getJSON(statsUrl());
 const fetchAnomalies = () => getJSON("/anomalies");
 const fetchFindings = () => getJSON("/findings?days=7");
 const fetchStatus = () => getJSON("/status");
+function topIpsUrl() {
+  const top = state.path.at(-1);
+  if (top) return `/top-ips?from=${isoLocal(top.from)}&to=${isoLocal(top.to)}`;
+  if (state.window === "year") {   // /top-ips has no 'year' preset - resolve to Jan 1 .. now here
+    const y = new Date();
+    return `/top-ips?from=${isoLocal(new Date(y.getFullYear(), 0, 1))}&to=${isoLocal(y)}`;
+  }
+  return `/top-ips?window=${encodeURIComponent(state.window)}`;
+}
+const fetchTopIps = () => getJSON(topIpsUrl());
 
 function fetchEvents(filter = {}) {
   const p = new URLSearchParams();
@@ -235,6 +245,29 @@ function renderHosts(top) {
     : `<li class="muted">none</li>`;
 }
 
+function ipChips(o) { // enrichment context for IP entities (country + provider); "" for hosts or unenriched IPs
+  if (!o.country_code && !o.asn_org) return "";
+  const cc = o.country_code ? `<span class="chip chip-country" title="${esc(o.country_name ?? "")}">${esc(o.country_code)}</span>` : "";
+  const org = o.asn_org ? `<span class="chip chip-asn" title="autonomous system / provider">${esc(o.asn_org)}</span>` : "";
+  return ` ${cc}${org}`;
+}
+
+function renderTopIps(resp) {
+  const list = $("#top-ips");
+  if (!resp.count) { list.innerHTML = `<li class="muted">no external traffic in this window</li>`; return; }
+  list.innerHTML = resp.ips.map((r) => `
+    <li>
+      <span class="ip-row">
+        <span class="host-name" title="${esc(r.ip)}">${esc(r.ip)}</span>
+        ${r.country_code ? `<span class="chip chip-country" title="${esc(r.country_name ?? "")}">${esc(r.country_code)}</span>` : ""}
+        ${r.network_type === "cgnat" ? `<span class="chip chip-cgnat" title="behind carrier-grade NAT (100.64.0.0/10) - in Germany usually mobile traffic">CGNAT</span>` : ""}
+        ${r.mobile_ua_share > 0 ? `<span class="chip chip-mobile" title="${Math.round(r.mobile_ua_share * 100)}% of this IP's requests used a phone User-Agent">${Math.round(r.mobile_ua_share * 100)}% mobile</span>` : ""}
+        <span class="count">${r.requests.toLocaleString()}</span>
+      </span>
+      ${r.asn_org ? `<span class="ip-sub muted" title="autonomous system / provider">${esc(r.asn_org)}</span>` : ""}
+    </li>`).join("");
+}
+
 function renderAnomalies(findings) {
   const badge = $("#anomaly-count");
   badge.textContent = findings.length;
@@ -247,7 +280,7 @@ function renderAnomalies(findings) {
     <li class="finding" data-i="${i}" tabindex="0" role="button">
       <span class="dot dot-${esc(a.kind)}"></span>
       <span class="kind">${esc(a.kind)}</span>
-      <span>${esc(a.entity ?? "—")} — ${esc(a.reason)}</span>
+      <span>${esc(a.entity ?? "—")}${ipChips(a)} — ${esc(a.reason)}</span>
     </li>`).join("");
 
   list.querySelectorAll(".finding").forEach((el) => {
@@ -268,7 +301,7 @@ function renderFindings(rows) {
       <span class="dot dot-sev-${esc(f.severity)}"></span>
       <span class="kind">${esc(f.kind)}</span>
       <span class="muted mono">${new Date(parseTs(f.window_start)).toLocaleString()}</span>
-      <span>${esc(f.entity)} — ${esc(f.reason)}</span>
+      <span>${esc(f.entity)}${ipChips(f)} — ${esc(f.reason)}</span>
       ${f.action_taken ? `<span class="muted">→ ${esc(f.action_taken)}</span>` : ""}
     </li>`).join("");
 
@@ -398,11 +431,12 @@ function renderCrumbs() {
 
 async function refreshAll() {
   try {
-    const [stats, findings, status, persisted] = await Promise.all([fetchStats(), fetchAnomalies(), fetchStatus(), fetchFindings()]);
+    const [stats, findings, status, persisted, topIps] = await Promise.all([fetchStats(), fetchAnomalies(), fetchStatus(), fetchFindings(), fetchTopIps()]);
     renderChart(stats);
     $("#total-count").textContent = stats.total_requests.toLocaleString();
     renderStatusClasses(stats.status_breakdown);
     renderHosts(stats.top_hosts);
+    renderTopIps(topIps);
     renderAnomalies(findings);
     renderFindings(persisted);
     renderFreshness(status, stats.latest_event);
