@@ -1,7 +1,8 @@
 services:
   ingest:
-    build: .
-    image: caddyloganalyzer
+    # prebuilt by GitHub Actions (.github/workflows/docker.yml) and pushed to ghcr.io;
+    # pin a specific tag via .env (CADDYLOG_IMAGE_TAG=…) or edit the image lines for reproducible deploys
+    image: ghcr.io/haruki/caddyloganalyzer:${CADDYLOG_IMAGE_TAG:-latest}
     container_name: caddylog-ingest
     user: "966:966"   # host caddy user (uid/gid) - owns /var/log/caddy, no permission changes needed
     restart: unless-stopped
@@ -19,7 +20,7 @@ services:
              done'
 
   alert:
-    image: caddyloganalyzer
+    image: ghcr.io/haruki/caddyloganalyzer:${CADDYLOG_IMAGE_TAG:-latest}
     container_name: caddylog-alert
     user: "966:966"
     restart: unless-stopped
@@ -41,7 +42,7 @@ services:
              done'
 
   api:
-    image: caddyloganalyzer
+    image: ghcr.io/haruki/caddyloganalyzer:${CADDYLOG_IMAGE_TAG:-latest}
     container_name: caddylog-api
     user: "966:966"
     restart: unless-stopped

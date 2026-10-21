@@ -124,9 +124,9 @@ The top-offenders card (1d tab or an explicit `from`/`to` over that hour) and th
 
 ## Deployment on the Caddy host (Docker Compose)
 
-The whole pipeline runs as a Docker Compose project — no host systemd units, no cron. The stack lives in `/data/pool/docker_stacks/caddyloganalyzer/` alongside your other services; this repository is checked out there and `compose.yaml` + `Dockerfile` are committed to it.
+The whole pipeline runs as a Docker Compose project — no host systemd units, no cron. The stack lives in `/data/pool/docker_stacks/caddyloganalyzer/` alongside your other services; the host only needs `compose.yaml` plus the `data/` directory. No repository checkout and no image build on the server: GitHub Actions ([`.github/workflows/docker.yml`](.github/workflows/docker.yml)) builds the image from `Dockerfile` + `uv.lock` on every push to `master` (and version tags) and pushes it to [ghcr.io/haruki/caddyloganalyzer](https://ghcr.io/haruki/caddyloganalyzer) — tags: `latest`, `sha-<short>`, plus the git tag for `v*` releases.
 
-Three containers share one image (`caddyloganalyzer`, built from the repo):
+Three containers share one prebuilt image (`ghcr.io/haruki/caddyloganalyzer:${CADDYLOG_IMAGE_TAG:-latest}`; pin a specific tag in `.env` or edit the `image:` lines to make a deployment reproducible):
 
 | Service | What it does |
 |---|---|
@@ -141,10 +141,13 @@ All services set `TZ=Europe/Berlin` to match the host clock. That is not cosmeti
 One-time setup on the host (the data dir must exist before compose starts; Docker would otherwise create a missing bind-mount source as root):
 
 ```bash
-git clone <repo> /data/pool/docker_stacks/caddyloganalyzer && cd $_
+mkdir -p /data/pool/docker_stacks/caddyloganalyzer && cd $_
+curl -fsSL https://raw.githubusercontent.com/Haruki/CaddyLogAnalyzer/master/compose.yaml -o compose.yaml
 sudo mkdir -p data && sudo chown 966:966 data
-docker compose up -d --build
+docker compose up -d        # pulls the prebuilt image from ghcr.io — no build on the host
 ```
+
+Updating to a new version: `docker compose pull && docker compose up -d` (optionally after pinning a tag). The `Dockerfile` stays in the repo for local builds (`docker build .`) when testing changes before pushing.
 
 Optional — GeoLite2 enrichment for the alert job: drop `GeoLite2-Country.mmdb` and/or `GeoLite2-ASN.mmdb` into a `geoip/` directory next to `compose.yaml` (the `alert` container mounts it read-only). Without them everything still works; country/ASN columns simply stay NULL until the files are in place, after which later runs backfill existing rows.
 
