@@ -53,7 +53,7 @@ services:
       # read-only API; DuckDB readers never write to the database file
       - ./data:/var/lib/caddylog:ro
     ports:
-      # loopback only - caddylog.pimpelkram.com reverse-proxies here (see Caddyfile)
+      # loopback only -  reverse-proxies here (see Caddyfile)
       - 127.0.0.1:8377:8377
     healthcheck:
       test: ["CMD", ".venv/bin/python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8377/status', timeout=5)"]
