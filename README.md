@@ -154,8 +154,7 @@ Optional — GeoLite2 enrichment for the alert job: drop `GeoLite2-Country.mmdb`
 The first `ingest` run imports the full log history (live file plus rotated archives) into a fresh database. The dashboard is fronted by Caddy like every other service — add this site block to `/etc/caddy/Caddyfile`:
 
 ```
-caddylog.pimpelkram.com {
-	import dns01_inwx
+caddylog.example.com {
 	reverse_proxy 127.0.0.1:8377
 }
 ```
