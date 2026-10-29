@@ -39,15 +39,26 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=tag
 
+      - name: Resolve image version
+        id: version
+        # Baked into the image for the dashboard's instance display: git tag for v*
+        # releases, short SHA otherwise — matches the image tags above. (GitHub
+        # expressions have no string slicing, so this runs in shell instead.)
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64          
           push: true
-          # Bake the instance identity into the image: git tag for v* releases,
-          # short SHA otherwise — matches the image tags above (see Dockerfile ARG).
+          # Bake the instance identity into the image (see Dockerfile ARG).
           build-args: |
-            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('sha-{0}', substring(github.sha, 0, 7)) }}
+            VERSION=${{ steps.version.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
