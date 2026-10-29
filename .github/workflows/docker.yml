@@ -16,6 +16,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        # Fail fast on malformed tags so they never produce images — semver with
+        # optional prerelease/build suffix (v1.1.0, v1.1.0-rc.1). Master pushes
+        # are unaffected; this only guards tag-triggered release builds.
+        run: |
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'${GITHUB_REF_NAME}' is not a valid semver tag — use v<major>.<minor>.<patch>, e.g. v1.1.0"
+            exit 1
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

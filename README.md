@@ -153,6 +153,12 @@ Running more than one server? Set `CADDYLOG_HOSTNAME` in `.env` next to `compose
 
 Updating to a new version: `docker compose pull && docker compose up -d` (optionally after pinning a tag). The `Dockerfile` stays in the repo for local builds (`docker build .`) when testing changes before pushing.
 
+Cutting a release: once a state has run stable on the live server, tag that commit with semver and push — CI validates the format (fails fast on anything but `v<major>.<minor>.<patch>`, optional prerelease suffix like `-rc.1`) and pushes image `:<tag>` alongside. Increment rules for this project: **patch** for bug fixes/docs, **minor** for additive features (new endpoints, fields, env vars), **major** for breaking changes to the JSON API contract or database schema.
+
+```bash
+git tag -a v1.1.0 -m "release notes" && git push origin v1.1.0
+```
+
 Optional — GeoLite2 enrichment for the alert job: drop `GeoLite2-Country.mmdb` and/or `GeoLite2-ASN.mmdb` into a `geoip/` directory next to `compose.yaml` (the `alert` container mounts it read-only). Without them everything still works; country/ASN columns simply stay NULL until the files are in place, after which later runs backfill existing rows.
 
 The first `ingest` run imports the full log history (live file plus rotated archives) into a fresh database. The dashboard is fronted by Caddy like every other service — add this site block to `/etc/caddy/Caddyfile`:
