@@ -116,6 +116,21 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"]
 )
 
+# The dashboard assets are served from the image and change between releases, but
+# Starlette sends no Cache-Control header — browsers then heuristically cache them
+# (~10% of file age), so a style.css fetched while an old image was running can stay
+# "fresh" for days after an update. Force revalidation on every load: ETag is already
+# sent, so unchanged files only cost a 304 round-trip.
+_DASHBOARD_ASSETS = ("/", "/index.html", "/style.css", "/app.js")
+
+
+@app.middleware("http")
+async def _revalidate_dashboard_assets(request, call_next):
+    response = await call_next(request)
+    if request.url.path in _DASHBOARD_ASSETS or request.url.path.startswith("/vendor/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 
 @contextmanager
 def db():
