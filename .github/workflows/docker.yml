@@ -45,5 +45,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64          
           push: true
+          # Bake the instance identity into the image: git tag for v* releases,
+          # short SHA otherwise — matches the image tags above (see Dockerfile ARG).
+          build-args: |
+            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('sha-{0}', substring(github.sha, 0, 7)) }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

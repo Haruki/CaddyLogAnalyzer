@@ -49,6 +49,9 @@ services:
     environment:
       - TZ=Europe/Berlin
       - CADDYLOG_DB=/var/lib/caddylog/access.duckdb
+      # Instance name shown in the dashboard header and browser tab title; set per server
+      # in .env (e.g. CADDYLOG_HOSTNAME=merkur). Falls back to the container hostname when unset.
+      - CADDYLOG_HOSTNAME=${CADDYLOG_HOSTNAME:-}
     volumes:
       # read-only API; DuckDB readers never write to the database file
       - ./data:/var/lib/caddylog:ro

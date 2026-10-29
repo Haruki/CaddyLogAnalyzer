@@ -8,3 +8,8 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN pip install --no-cache-dir uv && uv sync --frozen --no-dev
 
 COPY . .
+
+# Instance identity baked into the image at build time; CI passes the git tag
+# (v* releases) or short SHA as --build-arg VERSION. Local builds report "dev".
+ARG VERSION=dev
+ENV CADDYLOG_VERSION=${VERSION}

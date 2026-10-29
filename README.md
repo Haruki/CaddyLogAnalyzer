@@ -107,6 +107,8 @@ CADDYLOG_DB=access.duckdb uv run python api.py          # dev, binds 127.0.0.1:8
 # or explicitly: CADDYLOG_DB=/var/lib/caddylog/access.duckdb uv run uvicorn api:app --port 8377
 ```
 
+Instance identity for multi-server deployments: `CADDYLOG_HOSTNAME` sets the server name shown in the dashboard header and browser tab title (e.g. `caddylog · merkur v1.0`, or `caddylog · merkur sha-271cc04` for master builds), falling back to the container hostname when unset; the image version is baked in at build time (Dockerfile ARG — CI passes the git tag for `v*` releases or the short SHA, local builds report `dev`). Both are reported by `GET /status`, so shell-bar tools can show them too.
+
 The service also serves a small self-contained dashboard at `/` (static files from `static/`, no build step): window tabs, request chart (vendored uPlot), status breakdown, top hosts and anomaly findings with click-through drill-down into raw rows. The chart is click-to-zoom: clicking a bucket drills one level deeper (hour → 5-minute → per-minute → raw events) and breadcrumb chips track the path back; presets always reset to now-anchored views. A "recent anomalies" card lists persisted alert findings from the last 7 days (`GET /findings`); clicking one opens the drill-down scoped to that finding's own hour. A "top offenders" card ranks external IPs of the window with country/ASN/CGNAT chips and each IP's mobile User-Agent share (`GET /top-ips`). Live updates arrive via the SSE endpoint `GET /stream` — the server pushes an event whenever new rows land in the database (fingerprint check every 5 s); if a proxy buffers SSE, the dashboard falls back to plain polling automatically.
 
 Endpoints: `GET /stats?window=…` or `GET /stats?from=…&to=…` · `GET /anomalies` · `GET /findings?days=7` · `GET /top-ips?(window=…|from=…&to=…)&limit=…` · `GET /events?(window=…|from=…&to=…)&ip=…&host=…&min_status=…` · `GET /status` · `GET /stream`. Interactive OpenAPI docs at `/docs`. Binds 127.0.0.1 only; expose via a Caddy reverse proxy if needed (SSE needs `proxy_buffering off`).
@@ -146,6 +148,8 @@ curl -fsSL https://raw.githubusercontent.com/Haruki/CaddyLogAnalyzer/master/comp
 sudo mkdir -p data && sudo chown 966:966 data
 docker compose up -d        # pulls the prebuilt image from ghcr.io — no build on the host
 ```
+
+Running more than one server? Set `CADDYLOG_HOSTNAME` in `.env` next to `compose.yaml` (e.g. `CADDYLOG_HOSTNAME=merkur`) — it appears in the dashboard header and browser tab title, so parallel dashboards are distinguishable at a glance; unset falls back to the container hostname. The image version is baked into every CI build (git tag for `v*` releases, short SHA otherwise) and shown alongside.
 
 Updating to a new version: `docker compose pull && docker compose up -d` (optionally after pinning a tag). The `Dockerfile` stays in the repo for local builds (`docker build .`) when testing changes before pushing.
 

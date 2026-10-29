@@ -330,6 +330,17 @@ function openFindingDrilldown(finding) {
     .then(renderEvents).catch((err) => console.error(err));
 }
 
+// Instance identity (hostname + image version, both from /status): shown in the
+// page header and set as the browser tab title so parallel dashboards of
+// different servers are distinguishable at a glance. The version is rendered
+// verbatim — CI already passes display-ready labels (v1.0 for tags, sha-… on
+// master, "dev" for local builds).
+function renderInstance(status) {
+  const label = `${status.hostname} ${status.version}`;
+  document.title = `caddylog · ${label}`;
+  $("#instance").textContent = label;
+}
+
 function renderFreshness(status, latestEvent) {
   $("#status-dot").className = `dot ${status.ok ? "dot-ok" : "dot-warn"}`;
   const through = latestEvent ? new Date(parseTs(latestEvent)).toLocaleTimeString() : "—";
@@ -440,6 +451,7 @@ async function refreshAll() {
     renderAnomalies(findings);
     renderFindings(persisted);
     renderFreshness(status, stats.latest_event);
+    renderInstance(status);
   } catch (err) {
     console.error("refresh failed:", err);
     $("#status-dot").className = "dot dot-warn";

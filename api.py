@@ -30,6 +30,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import socket
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,12 @@ from pydantic import BaseModel
 DB_PATH = Path(os.environ.get("CADDYLOG_DB", "/var/lib/caddylog/access.duckdb"))
 
 PORT = 8377
+# Instance identity for multi-server deployments: which server this dashboard
+# belongs to (shown in the page header and browser tab title) plus the image
+# version it runs. HOSTNAME falls back to the container hostname; VERSION is
+# baked into the image at build time by CI (Dockerfile ARG), "dev" locally.
+HOSTNAME = os.environ.get("CADDYLOG_HOSTNAME") or socket.gethostname()
+VERSION = os.environ.get("CADDYLOG_VERSION", "dev")
 
 STREAM_TICK_SECONDS = 5   # /stream fingerprint check interval (see stream() below)
 
@@ -247,6 +254,8 @@ class StatusResponse(BaseModel):
     requests_last_hour: int
     errors_last_hour: int             # status >= 400
     anomalies: int                    # number of open findings (see /anomalies)
+    hostname: str                     # which server this instance runs on (CADDYLOG_HOSTNAME, else container hostname)
+    version: str                      # image version baked in at build time (git tag/SHA via CI, "dev" locally)
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +644,8 @@ def status() -> StatusResponse:
         requests_last_hour=requests,
         errors_last_hour=errors,
         anomalies=len(findings),
+        hostname=HOSTNAME,
+        version=VERSION,
     )
 
 
