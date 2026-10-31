@@ -56,8 +56,10 @@ services:
       # read-only API; DuckDB readers never write to the database file
       - ./data:/var/lib/caddylog:ro
     ports:
-      # loopback only -  reverse-proxies here (see Caddyfile)
-      - 127.0.0.1:8377:8377
+      # default: loopback only, fronted by Caddy (see Caddyfile). Set CADDYLOG_API_BIND in .env to the
+      # server's LAN IP (e.g. 192.168.0.223) so other homelab machines — e.g. the gethomepage box — can
+      # poll /status directly; read-only API, LAN exposure only.
+      - "${CADDYLOG_API_BIND:-127.0.0.1}:8377:8377"
     healthcheck:
       test: ["CMD", ".venv/bin/python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8377/status', timeout=5)"]
       interval: 60s

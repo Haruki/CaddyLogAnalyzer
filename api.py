@@ -271,6 +271,8 @@ class StatusResponse(BaseModel):
     anomalies: int                    # number of open findings (see /anomalies)
     hostname: str                     # which server this instance runs on (CADDYLOG_HOSTNAME, else container hostname)
     version: str                      # image version baked in at build time (git tag/SHA via CI, "dev" locally)
+    top_finding: str | None               # one line about the worst open finding ("entity — reason"), null when none
+    latest_event: str | None              # newest event in the database (ISO), null if empty — "data through" freshness
 
 
 # ---------------------------------------------------------------------------
@@ -642,8 +644,8 @@ def events(
 
 @app.get("/status", response_model=StatusResponse)
 def status() -> StatusResponse:
-    """Compact one-line state for shell-bar tools (waybar): poll this endpoint
-    and render an icon plus a couple of numbers. ok == no anomaly findings."""
+    """Compact one-line state for shell-bar tools (waybar) and gethomepage customapi widgets:
+    poll this endpoint and render a dot plus a couple of numbers. ok == no anomaly findings."""
     with db() as con:
         requests = con.execute(
             "SELECT count(*) FROM access_events WHERE event_ts >= now() - INTERVAL '1 hour'"
@@ -652,7 +654,16 @@ def status() -> StatusResponse:
             "SELECT count(*) FROM access_events"
             " WHERE event_ts >= now() - INTERVAL '1 hour' AND status >= 400"
         ).fetchone()[0]
+        latest = con.execute("SELECT max(event_ts) FROM access_events").fetchone()[0]
         findings = _hot_ips(con) + _volume_outliers(con) + _server_errors(con)
+
+    # Worst open finding as one line for at-a-glance widgets: broken backends (5xx)
+    # first, then volume outliers, then hot IPs; within a kind the loudest wins.
+    top_finding = None
+    if findings:
+        rank = {"server_errors": 2, "volume_outlier": 1, "hot_ip": 0}
+        worst = max(findings, key=lambda f: (rank[f.kind], f.value))
+        top_finding = f"{worst.entity} — {worst.reason}" if worst.entity else worst.reason
 
     return StatusResponse(
         ok=not findings,
@@ -661,6 +672,8 @@ def status() -> StatusResponse:
         anomalies=len(findings),
         hostname=HOSTNAME,
         version=VERSION,
+        top_finding=top_finding,
+        latest_event=latest.isoformat() if latest is not None else None,
     )
 
 
