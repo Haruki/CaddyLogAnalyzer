@@ -21,6 +21,10 @@ const WINDOW_BUCKETS = {         // shown under the chart title
 
 const state = { window: "1h", path: [] }; // path: [{label, from, to}] drill trail (ms epoch), oldest first
 
+// The finding row that opened the drill-down card, tracked by identity so the highlight
+// survives refreshAll() re-renders (SSE live updates rebuild both lists). null when closed.
+let activeMark = null; // {source: "anomaly"|"findings", kind, entity, windowStart?}
+
 // ---------- tiny helpers ----------
 
 const $ = (sel) => document.querySelector(sel);
@@ -185,17 +189,29 @@ function chartOptions() {
         ticks: { stroke: cssVar("--border") }, font: "12px ui-monospace, monospace",
         values: (_u, splits) => splits.map(fmtCompact) }, // v1.6.x: values gets the split array, returns labels
     ],
-    // Live value readout in the card header (uPlot hook API): hovering shows the bucket's
-    // time + exact count; leaving restores the plain bucket label.
+    // Live readout + bucket highlight (uPlot hook API): hovering shows the bucket's range,
+    // exact count and what a click will DO here — "click to zoom" while a click would push
+    // a drill level, "click for raw events" at the finest one. Leaving restores the hint.
     hooks: {
       setCursor: [(u) => {
         const sub = $("#chart-sub");
+        const hl = $("#bucket-hl");
         if (!chart || u.cursor.idx == null || u.cursor.idx >= u.data[1].length) {
           sub.textContent = lastStats ? idleSubtitle(lastStats) : "";
+          hl.classList.add("hidden");
           return;
         }
-        const when = new Date(u.data[0][u.cursor.idx]).toLocaleString();
-        sub.textContent = `${when} · ${Math.round(u.data[1][u.cursor.idx]).toLocaleString()}`;
+        const i = u.cursor.idx;
+        const xs = u.data[0];
+        const from = xs[i];
+        // mirror onChartClick: the in-progress last bucket has no successor — extend by one step
+        const to = i + 1 < xs.length ? xs[i + 1] : from + (lastStats.bucket_ms ?? nextMonthStart(from));
+        hl.style.left = `${u.valToPos(from, "x", true)}px`;
+        hl.style.width = `${Math.max(2, u.valToPos(to, "x", true) - u.valToPos(from, "x", true))}px`;
+        hl.classList.remove("hidden");
+        const action = zoomable(to - from) ? "click to zoom" : "click for raw events";
+        const n = Math.round(u.data[1][i]);
+        sub.textContent = `${rangeLabel(from, to)} · ${n.toLocaleString()} request${n === 1 ? "" : "s"} · ${action}`;
       }],
     },
     // normal mode: series[0] = x/time column (null), series[1] = the value series
@@ -216,9 +232,12 @@ function renderChart(stats) {
     return;
   }
   $("#chart-empty").classList.add("hidden");
-  // pointer cursor while a click would zoom in (finest level: raw events instead)
-  const clickable = xs.length > 1 && (stats.bucket_ms == null || zoomable(stats.bucket_ms));
-  $("#chart").classList.toggle("clickable", clickable);
+  // interaction mode cursors: magnifier while a click would zoom, pointer at the finest
+  // level where a click opens the raw-events card instead (see style.css)
+  const interactive = xs.length > 1;
+  const canZoom = stats.bucket_ms == null || zoomable(stats.bucket_ms);
+  $("#chart").classList.toggle("mode-zoom", interactive && canZoom);
+  $("#chart").classList.toggle("mode-raw", interactive && !canZoom);
   if (!chart) chart = new uPlot(chartOptions(), [xs, ys], $("#chart"));
   else chart.setData([xs, ys]); // v1.6.x: .update() was removed — setData() is the API
   bindChartClick();
@@ -252,6 +271,11 @@ function ipChips(o) { // enrichment context for IP entities (country + provider)
   return ` ${cc}${org}`;
 }
 
+// alert.py prefixes persisted reasons with "<entity>: " so ntfy bodies and console
+// logs stay self-contained; the card already shows the entity (with chips), so drop
+// the redundant prefix here. No-op if a reason ever stops carrying it.
+const reasonText = (f) => f.reason.startsWith(`${f.entity}: `) ? f.reason.slice(f.entity.length + 2) : f.reason;
+
 function renderTopIps(resp) {
   const list = $("#top-ips");
   if (!resp.count) { list.innerHTML = `<li class="muted">no external traffic in this window</li>`; return; }
@@ -283,8 +307,14 @@ function renderAnomalies(findings) {
       <span>${esc(a.entity ?? "—")}${ipChips(a)} — ${esc(a.reason)}</span>
     </li>`).join("");
 
+  // re-apply the trigger highlight after this (re)render — live updates rebuild the list
+  if (activeMark?.source === "anomaly") {
+    const idx = findings.findIndex(a => a.kind === activeMark.kind && (a.entity ?? null) === activeMark.entity);
+    if (idx >= 0) list.querySelector(`[data-i="${idx}"]`)?.classList.add("active");
+  }
+
   list.querySelectorAll(".finding").forEach((el) => {
-    const open = () => openDrilldown(findings[Number(el.dataset.i)]);
+    const open = async () => { if (await openDrilldown(findings[Number(el.dataset.i)])) markFindingRow(el, findings[Number(el.dataset.i)], "anomaly"); };
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
   });
@@ -296,17 +326,27 @@ function renderFindings(rows) {
   const list = $("#findings-list");
   if (!rows.length) { list.innerHTML = `<li class="muted">no persisted findings in the last 7 days</li>`; return; }
 
+  // explicit de-DE: bare toLocaleString() follows the viewer's browser language — an en-US phone
+  // renders "11/1/2026, 2:00 AM" instead of German dot dates (verified A/B on the live page).
   list.innerHTML = rows.map((f, i) => `
     <li class="finding" data-i="${i}" tabindex="0" role="button">
       <span class="dot dot-sev-${esc(f.severity)}"></span>
       <span class="kind">${esc(f.kind)}</span>
-      <span class="muted mono">${new Date(parseTs(f.window_start)).toLocaleString()}</span>
-      <span>${esc(f.entity)}${ipChips(f)} — ${esc(f.reason)}</span>
+      <span class="muted mono">${new Date(parseTs(f.window_start)).toLocaleString("de-DE")}</span>
+      <span>${esc(f.entity)}${ipChips(f)} — ${esc(reasonText(f))}</span>
       ${f.action_taken ? `<span class="muted">→ ${esc(f.action_taken)}</span>` : ""}
     </li>`).join("");
 
+  // re-apply the trigger highlight after this (re)render; window_start disambiguates
+  // repeated kind+entity pairs across days
+  if (activeMark?.source === "findings") {
+    const idx = rows.findIndex(f => f.kind === activeMark.kind && f.entity === activeMark.entity
+      && f.window_start === activeMark.windowStart);
+    if (idx >= 0) list.querySelector(`[data-i="${idx}"]`)?.classList.add("active");
+  }
+
   list.querySelectorAll(".finding").forEach((el) => {
-    const open = () => openFindingDrilldown(rows[Number(el.dataset.i)]);
+    const open = () => { if (openFindingDrilldown(rows[Number(el.dataset.i)])) markFindingRow(el, rows[Number(el.dataset.i)], "findings"); };
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
   });
@@ -322,12 +362,14 @@ function openFindingDrilldown(finding) {
     filter.min_status = 500;
   } else if (/^\d+\.\d+\.\d+\.\d+$/.test(finding.entity)) {  // IP-based rules
     filter.ip = finding.entity;
-  } else return;
+  } else return false;
   $("#drilldown").classList.remove("hidden");
+  attentionToCard();
   const parts = Object.entries(filter).map(([k, v]) => `${k} ${v}`);
   $("#drilldown-query").textContent = `${parts.join(" · ")} · ${rangeLabel(from, from + 3600e3)}`;
   fetchEvents({ ...filter, from: isoLocal(from), to: isoLocal(from + 3600e3) })
     .then(renderEvents).catch((err) => console.error(err));
+  return true;
 }
 
 // Instance identity (hostname + image version, both from /status): shown in the
@@ -392,13 +434,38 @@ function renderEvents(resp) {
 
 async function openDrilldown(finding) {
   const filter = drillFilterFor(finding);
-  if (!Object.keys(filter).length) return; // nothing to narrow on — stay put
+  if (!Object.keys(filter).length) return false; // nothing to narrow on — stay put
   $("#drilldown").classList.remove("hidden");
+  attentionToCard();
   $("#drilldown-query").textContent = describeFilter(filter, finding.kind);
   try { renderEvents(await fetchEvents(filter)); } catch (err) { console.error(err); }
+  return true;
 }
 
-function closeDrilldown() { $("#drilldown").classList.add("hidden"); }
+function closeDrilldown() {
+  activeMark = null;
+  $("#drilldown").classList.add("hidden");
+  document.querySelectorAll(".finding.active").forEach(el => el.classList.remove("active"));
+}
+
+// Attention handoff after the card opens: flash its outline once and bring it into view, so a
+// click's result is unmistakably where to look next.
+function attentionToCard() {
+  const card = $("#drilldown");
+  card.classList.remove("attention");
+  void card.offsetWidth;   // restart the CSS animation if the card was already flashing
+  card.classList.add("attention");
+  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// Keep the row that opened the drill-down marked until it closes (trigger -> result link).
+// The identity is stored so renderAnomalies/renderFindings can re-apply the class after a
+// live-update re-render replaces the <li> elements.
+function markFindingRow(el, finding, source) {
+  activeMark = { source, kind: finding.kind, entity: finding.entity ?? null, windowStart: finding.window_start };
+  document.querySelectorAll(".finding.active").forEach(x => x.classList.remove("active"));
+  el.classList.add("active");
+}
 
 // ---------- click-to-zoom (drill path + breadcrumbs) ----------
 
@@ -419,6 +486,7 @@ function onChartClick(u) {
 
 async function openRangeEvents(from, to) {
   $("#drilldown").classList.remove("hidden");
+  attentionToCard();
   $("#drilldown-query").textContent = `raw events · ${rangeLabel(from, to)}`;
   try { renderEvents(await fetchEvents({ from: isoLocal(from), to: isoLocal(to) })); }
   catch (err) { console.error(err); }

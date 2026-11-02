@@ -95,7 +95,20 @@ body {
 .crumb:hover { color: var(--fg); border-color: var(--accent); }
 .crumb-home { color: var(--accent); }
 .crumb-sep { color: var(--muted); opacity: 0.5; font-size: 12px; }
-#chart.clickable canvas { cursor: pointer; }
+/* two interaction modes, signalled by the cursor before any click happens:
+   zoom-in = a click pushes a drill level, pointer = a click opens raw events */
+#chart.mode-zoom canvas { cursor: zoom-in; }
+#chart.mode-raw canvas { cursor: pointer; }
+/* hovered bucket highlight (positioned by app.js over the uPlot canvas) */
+#bucket-hl { position: absolute; top: 12px; bottom: 4px; background: rgba(88, 166, 255, 0.13); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); pointer-events: none; }
+/* attention handoff: a just-opened drill-down card flashes its outline once */
+.card-drilldown.attention { animation: card-flash 1.8s ease-out; }
+@keyframes card-flash {
+  0%   { outline: 2px solid var(--accent); }
+  100% { outline: 2px solid transparent; }
+}
+/* the row that opened the drill-down stays marked until it closes */
+.finding.active { background: rgba(88, 166, 255, 0.14); text-decoration: none; }
 
 /* totals */
 .big-number { font-size: 38px; font-weight: 700; font-family: var(--mono); line-height: 1.1; margin-bottom: 12px; }
