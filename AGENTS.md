@@ -38,6 +38,7 @@ Guidance for AI coding agents working in this repository.
 
 ## Agent Working Agreement
 
+0. Do not run `git commit` or `git push`; leave all changes uncommitted in the working tree for the user to review and ship (explicit per-task instruction overrides this).
 1. Keep changes minimal and focused; avoid broad refactors unless requested.
 2. Treat `duckdb_schema.sql` as the source of truth for the raw access-event table definition.
 3. Preserve existing prototype behavior unless the user explicitly wants those scripts upgraded or retired.

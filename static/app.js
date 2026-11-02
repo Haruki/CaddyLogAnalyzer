@@ -167,6 +167,23 @@ new ResizeObserver(() => {
   if (chart) chart.setSize({ width: $("#chart").clientWidth, height: $("#chart").clientHeight });
 }).observe($("#chart"));
 
+// The bucket whose interval CONTAINS the pointer — boundary-exact, so the highlight switches
+// exactly on each 00 mark. uPlot's own cursor.idx snaps to the nearest data point instead, which
+// would switch at midpoints between buckets (the :30 mark in a per-minute view). Shared by the
+// hover hook and the click handler so both act on the same highlighted bucket. Null when the
+// pointer is outside the plot area (over axes/margins) — uPlot parks cursor.left at -10 then.
+function bucketIndexAt(u) {
+  const xs = u.data[0];
+  if (!xs.length || u.cursor.left == null) return null;
+  const posOf = (v) => u.valToPos(v, "x", false);   // plot-area-relative CSS px (zoom-invariant)
+  if (u.cursor.left < -1 || u.cursor.left > posOf(xs[xs.length - 1]) + 1) return null;
+  let i = 0;
+  for (let b = xs.length - 1; b >= 0; b--) {
+    if (u.cursor.left >= posOf(xs[b])) { i = b; break; }   // right side of a boundary wins
+  }
+  return i;
+}
+
 function chartOptions() {
   const accent = cssVar("--accent");
   return {
@@ -196,18 +213,27 @@ function chartOptions() {
       setCursor: [(u) => {
         const sub = $("#chart-sub");
         const hl = $("#bucket-hl");
-        if (!chart || u.cursor.idx == null || u.cursor.idx >= u.data[1].length) {
+        const i = bucketIndexAt(u);
+        if (!chart || i == null) {
           sub.textContent = lastStats ? idleSubtitle(lastStats) : "";
           hl.classList.add("hidden");
           return;
         }
-        const i = u.cursor.idx;
         const xs = u.data[0];
         const from = xs[i];
         // mirror onChartClick: the in-progress last bucket has no successor — extend by one step
         const to = i + 1 < xs.length ? xs[i + 1] : from + (lastStats.bucket_ms ?? nextMonthStart(from));
-        hl.style.left = `${u.valToPos(from, "x", true)}px`;
-        hl.style.width = `${Math.max(2, u.valToPos(to, "x", true) - u.valToPos(from, "x", true))}px`;
+        // Position in #chart's own CSS-px space, measured live so it stays correct at any browser
+        // zoom level: valToPos(..., false) is plot-area-relative CSS px (the "true" variant returns
+        // device pixels and drifts with dpr), plus the plot area's current offset inside #chart.
+        // Clamped so the in-progress last bucket can't spill past the card's right edge.
+        const dc = $("#chart").getBoundingClientRect();
+        const over = (chart.over || chart.root.querySelector(".u-over")).getBoundingClientRect();
+        const ox = over.left - dc.left;
+        const left = Math.max(0, u.valToPos(from, "x", false) + ox);
+        const right = Math.min($("#chart").clientWidth, u.valToPos(to, "x", false) + ox);
+        hl.style.left = `${left}px`;
+        hl.style.width = `${Math.max(2, right - left)}px`;
         hl.classList.remove("hidden");
         const action = zoomable(to - from) ? "click to zoom" : "click for raw events";
         const n = Math.round(u.data[1][i]);
@@ -364,6 +390,8 @@ function openFindingDrilldown(finding) {
     filter.ip = finding.entity;
   } else return false;
   $("#drilldown").classList.remove("hidden");
+  // row-originated: complement color scheme (see openDrilldown) — same bright pair as the marked row
+  $("#drilldown").classList.add("origin-row");
   attentionToCard();
   const parts = Object.entries(filter).map(([k, v]) => `${k} ${v}`);
   $("#drilldown-query").textContent = `${parts.join(" · ")} · ${rangeLabel(from, from + 3600e3)}`;
@@ -436,6 +464,9 @@ async function openDrilldown(finding) {
   const filter = drillFilterFor(finding);
   if (!Object.keys(filter).length) return false; // nothing to narrow on — stay put
   $("#drilldown").classList.remove("hidden");
+  // row-originated: complement color scheme — card border and the marked row share one bright
+  // color so trigger and result read as a pair at a glance (context switch from chart content)
+  $("#drilldown").classList.add("origin-row");
   attentionToCard();
   $("#drilldown-query").textContent = describeFilter(filter, finding.kind);
   try { renderEvents(await fetchEvents(filter)); } catch (err) { console.error(err); }
@@ -445,6 +476,7 @@ async function openDrilldown(finding) {
 function closeDrilldown() {
   activeMark = null;
   $("#drilldown").classList.add("hidden");
+  $("#drilldown").classList.remove("origin-row");   // next open re-sets the color scheme by origin
   document.querySelectorAll(".finding.active").forEach(el => el.classList.remove("active"));
 }
 
@@ -472,8 +504,9 @@ function markFindingRow(el, finding, source) {
 const nextMonthStart = (ms) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(); };
 
 function onChartClick(u) {
-  const i = u.cursor.idx;
-  if (!chart || i == null || i >= chart.data[0].length) return;
+  // same boundary-exact bucket the hover highlight shows — a click acts on what is highlighted
+  const i = bucketIndexAt(u);
+  if (!chart || i == null) return;
   const xs = chart.data[0];
   const from = xs[i];
   // last (in-progress) bucket has no successor: extend by one nominal step
@@ -485,7 +518,8 @@ function onChartClick(u) {
 }
 
 async function openRangeEvents(from, to) {
-  $("#drilldown").classList.remove("hidden");
+  // chart-originated: accent color scheme (matches the plot bucket highlight it came from)
+  $("#drilldown").classList.remove("hidden", "origin-row");
   attentionToCard();
   $("#drilldown-query").textContent = `raw events · ${rangeLabel(from, to)}`;
   try { renderEvents(await fetchEvents({ from: isoLocal(from), to: isoLocal(to) })); }
