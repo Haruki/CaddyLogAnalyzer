@@ -15,6 +15,8 @@ Guidance for AI coding agents working in this repository.
 - `alert.py`: One-shot hourly anomaly evaluator over closed 1-hour windows; persists findings into `anomaly_findings`, pushes warn/critical to ntfy, auto-bans critical IPs via the Caddy admin API. Checkpoint in `<db>.alert_state.json`, block state in `<db>.blocks.json`.
 - `compose.yaml` / `Dockerfile`: Docker Compose deployment on the Caddy host — three containers (`ingest` 5-min loop, `alert` hourly loop, `api` long-lived), all running as uid/gid 966 (host caddy user); DB + state in `./data/`, log dir bind-mounted read-only.
 - `api.py`: Read-only FastAPI service over `access_events` (stats / anomalies / findings history / events drill-down / status); runs as a long-lived process alongside the ingest job, DB path via env `CADDYLOG_DB`.
+- `copy_logs.sh`: rsyncs the current Caddy log set from the homeserver into `/tmp/caddyloganalyzer/logs` (local dev; needs one-time ACL read access on the server).
+- `dev_dashboard.sh`: throwaway local dashboard over copied logs — fresh temp DB + ingest run + API at 127.0.0.1:8390.
 - `README.md`: Short project overview and DuckDB initialization note.
 
 ## Runtime Assumptions
@@ -29,7 +31,7 @@ Guidance for AI coding agents working in this repository.
 
 ## Dependencies
 
-- Third-party: `duckdb` (schema init + ingest), `fastapi[standard]` (read-only web API; bundles uvicorn).
+- Third-party: `duckdb` (schema init + ingest), `pyarrow` (bulk row load in ingest), `fastapi[standard]` (read-only web API; bundles uvicorn).
 - Toolchain: `uv` — dependencies declared in `pyproject.toml`, locked in the committed `uv.lock`. Set up with `uv sync`; run commands with `uv run <cmd>`.
 
 ## Known Issues To Consider Before Editing

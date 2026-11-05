@@ -8,6 +8,9 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Europe/Berlin
+      # must match the sleep 300 in command below — ingest writes <db>.next_run.json after each run,
+      # which the dashboard counts down to next to its refresh button
+      - CADDYLOG_INGEST_PERIOD=300
     volumes:
       # read-only; the container runs as the same uid that owns this directory on the host
       - /var/log/caddy:/var/log/caddy:ro

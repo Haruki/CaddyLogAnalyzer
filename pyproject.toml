@@ -11,4 +11,5 @@ dependencies = [
     "pytz>=2026.5",
     # offline GeoLite2 lookups for the ip_enrichment step in alert.py
     "geoip2>=5,<6",
+    "pyarrow>=26.0.1",
 ]

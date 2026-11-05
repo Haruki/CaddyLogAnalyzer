@@ -273,6 +273,7 @@ class StatusResponse(BaseModel):
     version: str                      # image version baked in at build time (git tag/SHA via CI, "dev" locally)
     top_finding: str | None               # one line about the worst open finding ("entity — reason"), null when none
     latest_event: str | None              # newest event in the database (ISO), null if empty — "data through" freshness
+    next_ingest_at: str | None            # scheduled start of the next ingest run (ISO), null for manual runs — UI countdown
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +643,21 @@ def events(
     )
 
 
+def _next_ingest_at() -> str | None:
+    """Scheduled start of the next ingest run, or None when unknown.
+
+    Written by ingest.py after each successful periodic run (<db>.next_run.json,
+    gated on CADDYLOG_INGEST_PERIOD). Absent or unreadable means "unknown" — e.g.
+    manual runs, an ingest that has not completed a run yet, or a stale file after
+    a crash (the UI then shows the countdown as due until the next run rewrites it)."""
+    try:
+        payload = json.loads(Path(str(DB_PATH) + ".next_run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    at = payload.get("at") if isinstance(payload, dict) else None
+    return at if isinstance(at, str) else None
+
+
 @app.get("/status", response_model=StatusResponse)
 def status() -> StatusResponse:
     """Compact one-line state for shell-bar tools (waybar) and gethomepage customapi widgets:
@@ -674,6 +690,7 @@ def status() -> StatusResponse:
         version=VERSION,
         top_finding=top_finding,
         latest_event=latest.isoformat() if latest is not None else None,
+        next_ingest_at=_next_ingest_at(),
     )
 
 

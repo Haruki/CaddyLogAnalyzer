@@ -25,6 +25,9 @@ const state = { window: "1h", path: [] }; // path: [{label, from, to}] drill tra
 // survives refreshAll() re-renders (SSE live updates rebuild both lists). null when closed.
 let activeMark = null; // {source: "anomaly"|"findings", kind, entity, windowStart?}
 
+// ms epoch of the next scheduled ingest run (from /status); null when unknown → countdown hidden.
+let nextIngestAt = null;
+
 // ---------- tiny helpers ----------
 
 const $ = (sel) => document.querySelector(sel);
@@ -419,6 +422,27 @@ function renderFreshness(status, latestEvent) {
     `${status.ok ? "ok" : "attention"} · data through ${through} · ${status.anomalies} ${word}`;
 }
 
+// Countdown to the next ingest run, shown next to the refresh button. The server knows its own
+// schedule exactly: periodic runs of ingest.py write <db>.next_run.json after each commit and
+// /status exposes it — new rows can appear from that moment on (the SSE push follows within one
+// 5 s fingerprint tick). Manual runs leave it null → hidden; a stale file (crashed ingest) reads
+// as "due" until the next successful run rewrites it.
+function renderNextIngest(status) {
+  nextIngestAt = status.next_ingest_at ? parseTs(status.next_ingest_at) : null;
+  tickNextIngest();   // don't wait up to a second for the first paint after each refresh
+}
+
+function tickNextIngest() {
+  const el = $("#next-ingest");
+  if (nextIngestAt == null) { el.hidden = true; return; }
+  el.hidden = false;
+  const left = nextIngestAt - Date.now();
+  if (left <= 0) { el.textContent = "due"; el.classList.add("due"); return; }
+  el.classList.remove("due");
+  const m = Math.floor(left / 60_000), s = Math.floor((left % 60_000) / 1000);
+  el.textContent = `${m}:${String(s).padStart(2, "0")}`;
+}
+
 // ---------- drill-down (raw rows for a clicked anomaly) ----------
 
 function drillFilterFor(finding) {
@@ -473,11 +497,18 @@ async function openDrilldown(finding) {
   return true;
 }
 
-function closeDrilldown() {
+// The row mark belongs to the finding view that opened it (trigger -> result link) — and only
+// to that: clear it both when the card closes AND when chart-originated content takes over, so a
+// stale highlight never lingers next to a card showing unrelated raw events.
+function clearRowMarks() {
   activeMark = null;
+  document.querySelectorAll(".finding.active").forEach(el => el.classList.remove("active"));
+}
+
+function closeDrilldown() {
+  clearRowMarks();
   $("#drilldown").classList.add("hidden");
   $("#drilldown").classList.remove("origin-row");   // next open re-sets the color scheme by origin
-  document.querySelectorAll(".finding.active").forEach(el => el.classList.remove("active"));
 }
 
 // Attention handoff after the card opens: flash its outline once and bring it into view, so a
@@ -518,7 +549,9 @@ function onChartClick(u) {
 }
 
 async function openRangeEvents(from, to) {
-  // chart-originated: accent color scheme (matches the plot bucket highlight it came from)
+  // chart-originated: accent color scheme (matches the plot bucket highlight it came from); a row
+  // mark belongs only to the finding view that opened it — clear it so trigger and result stay paired
+  clearRowMarks();
   $("#drilldown").classList.remove("hidden", "origin-row");
   attentionToCard();
   $("#drilldown-query").textContent = `raw events · ${rangeLabel(from, to)}`;
@@ -553,6 +586,7 @@ async function refreshAll() {
     renderAnomalies(findings);
     renderFindings(persisted);
     renderFreshness(status, stats.latest_event);
+    renderNextIngest(status);
     renderInstance(status);
   } catch (err) {
     console.error("refresh failed:", err);
@@ -591,6 +625,7 @@ function wireControls() {
     refreshAll();
   }));
   $("#refresh-btn").addEventListener("click", () => refreshAll());
+  setInterval(tickNextIngest, 1000);   // countdown next to the refresh button (no-op while hidden)
   $("#drilldown-close").addEventListener("click", closeDrilldown);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrilldown(); });
 }

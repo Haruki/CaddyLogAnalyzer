@@ -48,6 +48,10 @@ This requires the project environment to be set up (`uv sync`).
 
 `ingest.py` is a one-shot, checkpointed importer for Caddy access logs: each run reads new complete lines since the last checkpoint (live `access.log` plus rotated archives), inserts them into `access_events` in a single transaction, then advances the checkpoint stored next to the database (`<db>.state.json`). Re-runs are safe; at-least-once semantics mean rare duplicates are possible after crashes or rotations, never lost rows.
 
+Rows are bulk-loaded through an Arrow relation (`pyarrow`) and inserted with one SQL-side scan instead of per-row parameter binding — a full-history import of several hundred thousand rows completes in seconds (the old `executemany` path measured ~5 ms/row on real data).
+
+When it runs on a fixed period (the compose loop), set `CADDYLOG_INGEST_PERIOD` to the loop's sleep seconds: each successful run then writes `<db>.next_run.json` with its scheduled start time, which the dashboard counts down to next to its refresh button. Manual or local runs leave the variable unset and write nothing — no false promises about a schedule that doesn't exist.
+
 Run manually:
 
 ```bash
@@ -109,7 +113,7 @@ CADDYLOG_DB=access.duckdb uv run python api.py          # dev, binds 127.0.0.1:8
 
 Instance identity for multi-server deployments: `CADDYLOG_HOSTNAME` sets the server name shown in the dashboard header and browser tab title (e.g. `caddylog · merkur v1.0`, or `caddylog · merkur sha-271cc04` for master builds), falling back to the container hostname when unset; the image version is baked in at build time (Dockerfile ARG — CI passes the git tag for `v*` releases or the short SHA, local builds report `dev`). Both are reported by `GET /status`, so shell-bar tools can show them too. For dashboard widgets (gethomepage customapi) the endpoint additionally carries `top_finding` (one line about the worst open finding) and `latest_event` (data-through timestamp), so both instances' state is visible at a glance without visiting the dashboards.
 
-The service also serves a small self-contained dashboard at `/` (static files from `static/`, no build step): window tabs, request chart (vendored uPlot), status breakdown, top hosts and anomaly findings with click-through drill-down into raw rows. The chart is click-to-zoom: clicking a bucket drills one level deeper (hour → 5-minute → per-minute → raw events) and breadcrumb chips track the path back; presets always reset to now-anchored views. A "recent anomalies" card lists persisted alert findings from the last 7 days (`GET /findings`); clicking one opens the drill-down scoped to that finding's own hour. A "top offenders" card ranks external IPs of the window with country/ASN/CGNAT chips and each IP's mobile User-Agent share (`GET /top-ips`). Live updates arrive via the SSE endpoint `GET /stream` — the server pushes an event whenever new rows land in the database (fingerprint check every 5 s); if a proxy buffers SSE, the dashboard falls back to plain polling automatically.
+The service also serves a small self-contained dashboard at `/` (static files from `static/`, no build step): window tabs, request chart (vendored uPlot), status breakdown, top hosts and anomaly findings with click-through drill-down into raw rows. The chart is click-to-zoom: clicking a bucket drills one level deeper (hour → 5-minute → per-minute → raw events) and breadcrumb chips track the path back; presets always reset to now-anchored views. A "recent anomalies" card lists persisted alert findings from the last 7 days (`GET /findings`); clicking one opens the drill-down scoped to that finding's own hour. A "top offenders" card ranks external IPs of the window with country/ASN/CGNAT chips and each IP's mobile User-Agent share (`GET /top-ips`). Live updates arrive via the SSE endpoint `GET /stream` — the server pushes an event whenever new rows land in the database (fingerprint check every 5 s); if a proxy buffers SSE, the dashboard falls back to plain polling automatically. A countdown next to the refresh button shows when the next ingest run is scheduled (`next_ingest_at` from `GET /status`, written by periodic runs of `ingest.py`) — new rows can appear from that moment on; it reads as "due" while a stale file waits for the next successful run, and hides entirely for manual setups.
 
 Dashboard assets (`/`, `/style.css`, `/app.js`, `vendor/`) are served with `Cache-Control: no-cache`: without it, browsers heuristically cache them and a stylesheet fetched while an older image was running could linger for days after an update. ETag revalidation makes unchanged files cost only a 304 round-trip.
 
@@ -125,6 +129,19 @@ uv run python alert.py --db access.duckdb --no-notify --no-ban     # persist fin
 ```
 
 The top-offenders card (1d tab or an explicit `from`/`to` over that hour) and the recent-anomalies card then light up with all five rule kinds. The script prints a cleanup statement (`DELETE FROM access_events WHERE remote_ip IN (…)`) when you're done; persisted findings simply stop matching once the fake IPs are gone from later windows.
+
+## Local development against server logs
+
+Two scripts at the repo root make it easy to evaluate the current pipeline state locally (e.g. after a coding session) — no Docker, no database setup:
+
+1. `./copy_logs.sh` — rsyncs the current Caddy log set (`access*`) from the homeserver into `/tmp/caddyloganalyzer/logs`. One-time prerequisite on the server so your user can read the private (600) log files:
+   ```bash
+   sudo setfacl -d -m u:<user>:r /var/log/caddy/     # every future log file readable by <user>
+   sudo setfacl -m u:<user>:r /var/log/caddy/access*  # existing files, one-time
+   ```
+2. `./dev_dashboard.sh` — builds a fresh throwaway database from the copied logs (one full ingest run) and serves the dashboard + API at `http://127.0.0.1:8390/`; Ctrl-C stops it. The DB is deliberately not persistent across runs: re-copying replaces files, so inode-based checkpoints can't be trusted — a fresh database keeps every evaluation predictable and duplicate-free.
+
+A full ingest of several hundred thousand rows takes on the order of tens of minutes (per-row `executemany` binding); for quick UI checks against small data use `fake_traffic.py` instead.
 
 ## Deployment on the Caddy host (Docker Compose)
 

@@ -69,6 +69,10 @@ body {
 .tabs button.active { color: var(--fg); border-color: var(--accent); background: rgba(88, 166, 255, 0.12); font-weight: 600; }
 .tabs-spacer { flex: 1; }
 
+/* countdown to the next ingest run, right of the refresh button */
+.countdown { font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 0 4px; }
+.countdown.due { color: var(--warning); }
+
 /* ---------- card grid ---------- */
 
 .grid {
