@@ -5,7 +5,7 @@ Guidance for AI coding agents working in this repository.
 ## Project State (October 2026)
 
 - Repository is a DuckDB-backed access-event pipeline; early prototype scripts were removed in October 2026.
-- No package layout and no automated tests yet.
+- No package layout; core pipeline logic is covered by the pytest suite in `tests/`.
 
 ## Repository Map
 
@@ -17,11 +17,13 @@ Guidance for AI coding agents working in this repository.
 - `api.py`: Read-only FastAPI service over `access_events` (stats / anomalies / findings history / events drill-down / status); runs as a long-lived process alongside the ingest job, DB path via env `CADDYLOG_DB`.
 - `copy_logs.sh`: rsyncs the current Caddy log set from the homeserver into `/tmp/caddyloganalyzer/logs` (local dev; needs one-time ACL read access on the server).
 - `dev_dashboard.sh`: throwaway local dashboard over copied logs — fresh temp DB + ingest run + API at 127.0.0.1:8390.
+- `tests/`: pytest suite covering ingest mapping/checkpoint/rotation, alert rule semantics + window math + block state, API bucket ladder/range validation, and schema initialization (dev-only dependency, excluded from the image).
 - `README.md`: Short project overview and DuckDB initialization note.
 
 ## Runtime Assumptions
 
 - Future architecture assumes one Python writer process inserts events into DuckDB.
+- **Timezone discipline**: all services run with `TZ=Europe/Berlin`; `event_ts` is stored as naive local wall clock, and every query must use that same convention. DuckDB gotcha (verified 2026-11): `to_timestamp(double)` returns TIMESTAMPTZ, so its INSERT cast into the TIMESTAMP column uses session TZ — but `epoch()` applied to a *stored* TIMESTAMP treats the wall clock as UTC and silently shifts by exactly one hour (the UTC offset). Never call `epoch(event_ts)` directly; use `epoch(event_ts::TIMESTAMPTZ)`, or compare instants via in-session `to_timestamp(...)` equality (see `tests/test_ingest.py`).
 - Input format is JSON per line, with keys:
   - `request.remote_ip`
   - `request.uri`
@@ -32,11 +34,8 @@ Guidance for AI coding agents working in this repository.
 ## Dependencies
 
 - Third-party: `duckdb` (schema init + ingest), `pyarrow` (bulk row load in ingest), `fastapi[standard]` (read-only web API; bundles uvicorn).
+- Dev-only: `pytest` (`[dependency-groups] dev`) — the test suite in `tests/`; excluded from the Docker image by `uv sync --no-dev`.
 - Toolchain: `uv` — dependencies declared in `pyproject.toml`, locked in the committed `uv.lock`. Set up with `uv sync`; run commands with `uv run <cmd>`.
-
-## Known Issues To Consider Before Editing
-
-1. No automated tests currently exist.
 
 ## Agent Working Agreement
 
@@ -53,7 +52,8 @@ Guidance for AI coding agents working in this repository.
 Run these checks after edits:
 
 ```bash
-uv run python -m py_compile init_duckdb.py ingest.py alert.py api.py
+uv run python -m py_compile common.py init_duckdb.py ingest.py alert.py api.py
+uv run pytest
 ```
 If `compose.yaml` or `Dockerfile` changes, also verify the image still builds: `docker build -t caddyloganalyzer .`.
 
@@ -73,4 +73,4 @@ If ingest behavior changes, also do a smoke run against a sample log directory a
 1. ~~Add an ingest module that maps Caddy access log JSON into `access_events` rows~~ — done (`ingest.py`, checkpointed, at-least-once).
 2. Add incremental import from the current log file as a bridge before live event ingestion exists.
 3. Add daily and monthly summary tables for consolidation.
-4. Add tests for schema initialization and event-to-row mapping.
+4. ~~Add tests for schema initialization and event-to-row mapping~~ — done (`tests/`, pytest; see Verification Checklist).

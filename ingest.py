@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pyarrow as pa
 
+from common import atomic_write_json
 from init_duckdb import connect_with_retry, initialize_database
 
 LIVE_NAME = "access.log"
@@ -105,15 +106,8 @@ def load_state(path: Path) -> dict:
         return {}
 
 
-def _atomic_write_json(path: Path, payload: dict) -> None:
-    """Atomic write: temp file + rename, so a crash never corrupts the file."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def save_state(path: Path, state: dict) -> None:
-    _atomic_write_json(path, state)
+    atomic_write_json(path, state)
 
 
 def read_live_lines(path: Path, offset: int):
@@ -236,7 +230,7 @@ def run(log_dir: Path, db_path: Path, state_path: Path) -> None:
             print(f"WARNING: CADDYLOG_INGEST_PERIOD={period!r} is not an integer; "
                   f"next-run file not written", file=sys.stderr)
         else:
-            _atomic_write_json(Path(str(db_path) + ".next_run.json"), {"at": at})
+            atomic_write_json(Path(str(db_path) + ".next_run.json"), {"at": at})
 
     print(f"ingest: {len(candidates)} file(s) scanned, "
           f"{sum(r[1] for r in per_file)} lines read, "

@@ -13,3 +13,11 @@ dependencies = [
     "geoip2>=5,<6",
     "pyarrow>=26.0.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]   # tests import the pipeline scripts from the repo root

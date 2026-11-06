@@ -143,6 +143,21 @@ Two scripts at the repo root make it easy to evaluate the current pipeline state
 
 A full ingest of several hundred thousand rows takes on the order of tens of minutes (per-row `executemany` binding); for quick UI checks against small data use `fake_traffic.py` instead.
 
+## Tests
+
+`tests/` pins the core pipeline logic with pytest — a dev-only dependency (`[dependency-groups] dev` in `pyproject.toml`), excluded from the Docker image by `uv sync --no-dev`:
+
+- **ingest**: event→row mapping (every column, sparse entries → NULLs), malformed/non-access lines skipped without error, checkpoint idempotency (re-run inserts 0 rows), log rotation with no duplicates and no loss, bulk-load type fidelity through the Arrow relation
+- **alert**: closed-window math, detection-rule semantics against crafted traffic (auth-breach needs failures *and* repeated success; exfiltration needs varying sizes *and* a brand-new IP on sensitive paths; LAN traffic excluded), auto-ban state round-trip and corruption fail-safe
+- **api**: click-to-zoom bucket ladder boundaries (mirrored in `static/app.js`), explicit-range validation, bucket-boundary flooring
+- **schema**: initialization creates the canonical tables and is safe to re-run
+
+```bash
+uv run pytest
+```
+
+Live side effects (ntfy push, Caddy auto-ban) are not covered by the suite — they remain verified by smoke runs on the homeserver; `fake_traffic.py` above is the local stand-in for exercising all rules against a real database.
+
 ## Deployment on the Caddy host (Docker Compose)
 
 The whole pipeline runs as a Docker Compose project — no host systemd units, no cron. The stack lives in `/data/pool/docker_stacks/caddyloganalyzer/` alongside your other services; the host only needs `compose.yaml` plus the `data/` directory. No repository checkout and no image build on the server: GitHub Actions ([`.github/workflows/docker.yml`](.github/workflows/docker.yml)) builds the image from `Dockerfile` + `uv.lock` on every push to `master` (and version tags) and pushes it to [ghcr.io/haruki/caddyloganalyzer](https://ghcr.io/haruki/caddyloganalyzer) — tags: `latest`, `sha-<short>`, plus the git tag for `v*` releases.

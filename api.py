@@ -42,6 +42,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from common import EXT, HOT_IP_THRESHOLD
+
 # Database location: overridable via env so the same code runs in dev (point at
 # a local sample DB) and in the caddylog-api container on the Caddy host (default below).
 DB_PATH = Path(os.environ.get("CADDYLOG_DB", "/var/lib/caddylog/access.duckdb"))
@@ -58,7 +60,7 @@ STREAM_TICK_SECONDS = 5   # /stream fingerprint check interval (see stream() bel
 
 # Tunables for anomaly detection. Deliberately simple, explainable rules — each
 # finding carries a human-readable reason string that the UI can show verbatim.
-HOT_IP_THRESHOLD = 50      # external requests per hour that count as "hot"
+# (HOT_IP_THRESHOLD lives in common.py — shared with alert.py's persisted rules)
 ZSCORE_LIMIT = 3.0         # daily volume this many std-devs above the 30d mean ...
 ZSCORE_MIN_DAYS = 7        # ... but only for IPs seen on at least this many days
 
@@ -288,8 +290,8 @@ def _hot_ips(con) -> list[Anomaly]:
     practice, replace with per-IP baselines as _volume_outliers does.
     """
     rows = con.execute(
-        "SELECT remote_ip, count(*) c FROM access_events"
-        " WHERE event_ts >= now() - INTERVAL '1 hour' AND remote_ip NOT LIKE '192.168%'"
+        f"SELECT remote_ip, count(*) c FROM access_events"
+        f" WHERE event_ts >= now() - INTERVAL '1 hour' AND {EXT}"
         " GROUP BY 1 HAVING c > ? ORDER BY c DESC",
         [HOT_IP_THRESHOLD],
     ).fetchall()
@@ -310,10 +312,10 @@ def _volume_outliers(con) -> list[Anomaly]:
     IP with 40 requests in a day has no baseline yet, so it is not "unusual".
     """
     rows = con.execute(
-        """WITH base AS (
+        f"""WITH base AS (
                SELECT remote_ip, date_trunc('day', event_ts) d, count(*) c
                FROM access_events
-               WHERE event_ts >= now() - INTERVAL '30 days' AND remote_ip NOT LIKE '192.168%'
+               WHERE event_ts >= now() - INTERVAL '30 days' AND {EXT}
                GROUP BY 1, 2
            ), stats AS (
                SELECT remote_ip, avg(c) mu, stddev(c) sd
@@ -537,7 +539,7 @@ def top_ips(
     "is this someone's mobile or a box". LAN traffic is excluded.
     """
     rng = _parse_range(from_, to)
-    where: list[str] = ["remote_ip IS NOT NULL", "remote_ip NOT LIKE '192.168%'"]
+    where: list[str] = [EXT]
     params: list = []
     if rng is not None:
         f, t = rng

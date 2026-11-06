@@ -35,10 +35,11 @@ from pathlib import Path
 
 import duckdb
 
+from common import EXT, HOT_IP_THRESHOLD, atomic_write_json
 from init_duckdb import connect_with_retry, initialize_database
 
 # --- detection thresholds -----------------------------------------------------
-HOT_IP_THRESHOLD = 50            # external requests in one closed hour -> info finding
+# (HOT_IP_THRESHOLD lives in common.py — shared with api.py's rolling hints)
 FIRST_SIGHT_MIN_REQUESTS = 100   # first-ever event + this many in the first hour -> warn
 AUTH_FAILURE_MIN = 3             # 401s from one IP on a host before success counts as breach
 AUTH_SUCCESS_MIN = 3             # successful requests required after the failures (one stray 2xx is noise)
@@ -61,8 +62,7 @@ CADDY_ADMIN = os.environ.get("CADDY_ADMIN", "http://127.0.0.1:2019")
 SEV_INFO, SEV_WARN, SEV_CRITICAL = "info", "warn", "critical"
 NTFY_PRIORITY = {SEV_WARN: 3, SEV_CRITICAL: 5}   # ntfy priorities; >=4 pages harder on phones
 
-# External traffic only — LAN (192.168.*) is trusted by design of this setup.
-EXT = "remote_ip IS NOT NULL AND remote_ip NOT LIKE '192.168%'"
+# (the EXT external-traffic predicate lives in common.py — shared with api.py)
 
 
 def window_bounds(now: datetime) -> tuple[datetime, datetime]:
@@ -475,7 +475,7 @@ def load_blocks(blocks_path: Path) -> dict:
 
 
 def save_blocks(blocks_path: Path, blocks: dict) -> None:
-    blocks_path.write_text(json.dumps(blocks, indent=2), encoding="utf-8")
+    atomic_write_json(blocks_path, blocks)   # crash mid-write must not corrupt the block state
 
 
 def reconcile_expired(blocks_path: Path) -> None:
@@ -566,7 +566,7 @@ def run(db_path: Path, state_path: Path, blocks_path: Path,
         con.execute("CHECKPOINT")   # force WAL flush before the checkpoint file advances
 
         if window_start is None:
-            state_path.write_text(json.dumps({"last_window_end": iso(we)}), encoding="utf-8")
+            atomic_write_json(state_path, {"last_window_end": iso(we)})
 
         print(f"alert: {mode}, {len(findings)} finding(s) persisted, "
               f"{pushed} pushed, {blocked} blocked, {enriched} ip(s) enriched")
