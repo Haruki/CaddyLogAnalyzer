@@ -121,6 +121,8 @@ Endpoints: `GET /stats?window=…` or `GET /stats?from=…&to=…` · `GET /anom
 
 ## Local testing without external traffic
 
+**One-command dashboard with every card populated:** `./dev_dashboard.sh` builds a throwaway database from deterministic fixture logs (`dev_fixtures.py`) — 7 days of realistic traffic, the full alert scenario in the last closed hour, and an ongoing incident over the last ~50 minutes — then runs ingest + `alert.py --no-notify --no-ban`, so chart/totals/hosts/top-offenders/anomalies/findings all have data at http://127.0.0.1:8390 without any server access. Country/ASN chips appear when the GeoLite2 files are present (see `geoip/README.md`). Spot check against real production format instead: copy logs first (`./copy_logs.sh`) and run with `CADDYLOG_DEV_LOGS=/tmp/caddyloganalyzer/logs`. The same chain is pinned as an end-to-end test in `tests/test_pipeline.py`.
+
 When a local database only has LAN traffic in recent windows, `fake_traffic.py` inserts one closed hour of synthetic external traffic — documentation-range IPs (RFC 5737 / APNIC doctest) that never appear in real logs — covering every alert rule plus the CGNAT and mobile-UA paths:
 
 ```bash
@@ -134,14 +136,15 @@ The top-offenders card (1d tab or an explicit `from`/`to` over that hour) and th
 
 Two scripts at the repo root make it easy to evaluate the current pipeline state locally (e.g. after a coding session) — no Docker, no database setup:
 
-1. `./copy_logs.sh` — rsyncs the current Caddy log set (`access*`) from the homeserver into `/tmp/caddyloganalyzer/logs`. One-time prerequisite on the server so your user can read the private (600) log files:
+1. `./dev_dashboard.sh` — one command, every card populated, **no server access needed**: generates deterministic fixture logs (`dev_fixtures.py`, see [Local testing](#local-testing-without-external-traffic)), builds a fresh throwaway database (ingest + alert run with `--no-notify --no-ban`) and serves the dashboard + API at `http://127.0.0.1:8390/`; Ctrl-C stops it. The DB is deliberately not persistent across runs — fixtures are regenerated each time, so a fresh database keeps every evaluation predictable and duplicate-free.
+2. `./copy_logs.sh` — rsyncs the current Caddy log set (`access*`) from the homeserver into `/tmp/caddyloganalyzer/logs`, for spot checks against the real production format. One-time prerequisite on the server so your user can read the private (600) log files:
    ```bash
    sudo setfacl -d -m u:<user>:r /var/log/caddy/     # every future log file readable by <user>
    sudo setfacl -m u:<user>:r /var/log/caddy/access*  # existing files, one-time
    ```
-2. `./dev_dashboard.sh` — builds a fresh throwaway database from the copied logs (one full ingest run) and serves the dashboard + API at `http://127.0.0.1:8390/`; Ctrl-C stops it. The DB is deliberately not persistent across runs: re-copying replaces files, so inode-based checkpoints can't be trusted — a fresh database keeps every evaluation predictable and duplicate-free.
+   Then run the same chain over the real logs: `CADDYLOG_DEV_LOGS=/tmp/caddyloganalyzer/logs ./dev_dashboard.sh`
 
-A full ingest of several hundred thousand rows takes on the order of tens of minutes (per-row `executemany` binding); for quick UI checks against small data use `fake_traffic.py` instead.
+Ingest is fast either way — rows are bulk-loaded through an Arrow relation, so a full-history import of several hundred thousand rows completes in seconds (see [Ingestion](#ingestion)).
 
 ## Tests
 
@@ -150,13 +153,14 @@ A full ingest of several hundred thousand rows takes on the order of tens of min
 - **ingest**: event→row mapping (every column, sparse entries → NULLs), malformed/non-access lines skipped without error, checkpoint idempotency (re-run inserts 0 rows), log rotation with no duplicates and no loss, bulk-load type fidelity through the Arrow relation
 - **alert**: closed-window math, detection-rule semantics against crafted traffic (auth-breach needs failures *and* repeated success; exfiltration needs varying sizes *and* a brand-new IP on sensitive paths; LAN traffic excluded), auto-ban state round-trip and corruption fail-safe
 - **api**: click-to-zoom bucket ladder boundaries (mirrored in `static/app.js`), explicit-range validation, bucket-boundary flooring
+- **pipeline**: end-to-end over generated fixture logs (`dev_fixtures.py`) — ingest → alert run → API, asserting every dashboard card has data (stats/timeseries, top-offenders with the enrichment join, all five finding kinds persisted in the scenario hour, rolling anomalies at any minute of the hour, drill-down rows) and that noise lines are skipped without errors
 - **schema**: initialization creates the canonical tables and is safe to re-run
 
 ```bash
 uv run pytest
 ```
 
-Live side effects (ntfy push, Caddy auto-ban) are not covered by the suite — they remain verified by smoke runs on the homeserver; `fake_traffic.py` above is the local stand-in for exercising all rules against a real database.
+Live side effects (ntfy push, Caddy auto-ban) are not covered by the suite — they remain verified by smoke runs on the homeserver; `dev_fixtures.py` plus the pipeline test above are the local stand-in for exercising all rules against a real database.
 
 ## Deployment on the Caddy host (Docker Compose)
 

@@ -16,8 +16,9 @@ Guidance for AI coding agents working in this repository.
 - `compose.yaml` / `Dockerfile`: Docker Compose deployment on the Caddy host — three containers (`ingest` 5-min loop, `alert` hourly loop, `api` long-lived), all running as uid/gid 966 (host caddy user); DB + state in `./data/`, log dir bind-mounted read-only.
 - `api.py`: Read-only FastAPI service over `access_events` (stats / anomalies / findings history / events drill-down / status); runs as a long-lived process alongside the ingest job, DB path via env `CADDYLOG_DB`.
 - `copy_logs.sh`: rsyncs the current Caddy log set from the homeserver into `/tmp/caddyloganalyzer/logs` (local dev; needs one-time ACL read access on the server).
-- `dev_dashboard.sh`: throwaway local dashboard over copied logs — fresh temp DB + ingest run + API at 127.0.0.1:8390.
-- `tests/`: pytest suite covering ingest mapping/checkpoint/rotation, alert rule semantics + window math + block state, API bucket ladder/range validation, and schema initialization (dev-only dependency, excluded from the image).
+- `dev_fixtures.py`: deterministic Caddy-format fixture log generator (fixed seed, anchored to now) — normal traffic from real GeoLite2-resolvable IPs plus the full alert scenario in the last closed hour and an ongoing incident for the rolling views; used by `dev_dashboard.sh` and `tests/test_pipeline.py`.
+- `dev_dashboard.sh`: one-command fixture-based dev dashboard — fresh temp DB + generated fixtures + ingest + alert run (`--no-notify --no-ban`) + API at 127.0.0.1:8390; every card populated, no server access needed. `CADDYLOG_DEV_LOGS` switches to real copied logs for spot checks.
+- `tests/`: pytest suite covering ingest mapping/checkpoint/rotation, alert rule semantics + window math + block state, API bucket ladder/range validation, end-to-end fixture pipeline (every dashboard card populated), and schema initialization (dev-only dependency, excluded from the image).
 - `README.md`: Short project overview and DuckDB initialization note.
 
 ## Runtime Assumptions
@@ -52,7 +53,7 @@ Guidance for AI coding agents working in this repository.
 Run these checks after edits:
 
 ```bash
-uv run python -m py_compile common.py init_duckdb.py ingest.py alert.py api.py
+uv run python -m py_compile common.py init_duckdb.py ingest.py alert.py api.py dev_fixtures.py fake_traffic.py
 uv run pytest
 ```
 If `compose.yaml` or `Dockerfile` changes, also verify the image still builds: `docker build -t caddyloganalyzer .`.
